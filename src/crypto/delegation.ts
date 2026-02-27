@@ -1,0 +1,92 @@
+import { type KeyPair, sign, verify, encodeBase64, decodeBase64 } from "./keys";
+import type { Scope } from "../policy/scope";
+
+export type { Scope };
+
+export interface DelegationToken {
+  version: 1;
+  issuer: string;        // user public key (base64)
+  subject: string;       // agent public key (base64)
+  scope: Scope;
+  issued_at: string;     // ISO 8601
+  expires_at: string;    // ISO 8601
+  max_uses?: number;
+  context_hash?: string; // 会話コンテキストのSHA-256
+  signature: string;     // issuerによる署名 (base64)
+}
+
+export interface DelegationOpts {
+  expires_at?: string;     // ISO 8601。省略時はissued_atから4時間後
+  max_uses?: number;
+  context_hash?: string;
+}
+
+/**
+ * 署名対象となるトークンペイロードを正規化JSON文字列として生成。
+ * signatureフィールドを除いた全フィールドをキー順ソートで直列化。
+ */
+function canonicalize(token: Omit<DelegationToken, "signature">): string {
+  // 全階層でキー順ソートした安定なJSON文字列を生成
+  return JSON.stringify(token, (_key, value) => {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(value).sort()) {
+        sorted[k] = value[k];
+      }
+      return sorted;
+    }
+    return value;
+  });
+}
+
+export function createDelegation(
+  userKey: KeyPair,
+  agentPubKey: string,
+  scope: Scope,
+  opts?: DelegationOpts,
+): DelegationToken {
+  const now = new Date();
+  const issuedAt = now.toISOString();
+
+  // デフォルト有効期限: 4時間
+  const defaultExpiry = new Date(now.getTime() + 4 * 60 * 60 * 1000);
+  const expiresAt = opts?.expires_at ?? defaultExpiry.toISOString();
+
+  const payload: Omit<DelegationToken, "signature"> = {
+    version: 1,
+    issuer: encodeBase64(userKey.publicKey),
+    subject: agentPubKey,
+    scope,
+    issued_at: issuedAt,
+    expires_at: expiresAt,
+    ...(opts?.max_uses !== undefined && { max_uses: opts.max_uses }),
+    ...(opts?.context_hash !== undefined && { context_hash: opts.context_hash }),
+  };
+
+  const message = new TextEncoder().encode(canonicalize(payload));
+  const sig = sign(message, userKey.secretKey);
+
+  return {
+    ...payload,
+    signature: encodeBase64(sig),
+  };
+}
+
+export function verifyDelegation(
+  token: DelegationToken,
+  userPubKey: string,
+): boolean {
+  // issuerとuserPubKeyの一致を検証
+  if (token.issuer !== userPubKey) {
+    return false;
+  }
+
+  // signatureフィールドを除いたペイロードを復元
+  const { signature, ...payload } = token;
+
+  const message = new TextEncoder().encode(canonicalize(payload));
+  const sig = decodeBase64(signature);
+  const pubKey = decodeBase64(userPubKey);
+
+  return verify(message, sig, pubKey);
+}

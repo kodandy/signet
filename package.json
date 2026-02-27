@@ -1,0 +1,19 @@
+{
+  "name": "signet",
+  "version": "0.1.0",
+  "description": "Cryptographic authorization delegation layer for local AI agents",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "tweetnacl": "^1.0.3",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.0.0",
+    "vitest": "^4.0.18"
+  }
+}
