@@ -181,10 +181,14 @@ describe("crypto/delegation", () => {
 
       const token = createDelegation(userKey, agentPubKey, testScope);
 
-      // 改竄: 署名を壊す
+      // 改竄: 署名のバイトをビットフリップで確実に破壊
+      const sigBytes = new Uint8Array(
+        Buffer.from(token.signature, "base64"),
+      );
+      sigBytes[0] ^= 0xff;
       const tampered: DelegationToken = {
         ...token,
-        signature: token.signature.replace(/A/g, "B"),
+        signature: Buffer.from(sigBytes).toString("base64"),
       };
 
       expect(verifyDelegation(tampered, userPubKey)).toBe(false);
