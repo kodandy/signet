@@ -1,0 +1,63 @@
+version: 1
+defaults:
+  expires: "4h"
+
+scope:
+  filesystem:
+    writable:
+      - "./src/**"
+      - "./test/**"
+      - "./docs/**"
+      - "./package.json"
+      - "./tsconfig.json"
+    readable:
+      - "./**"
+    blocked:
+      - "./.env"
+      - "./.env.*"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "~/.npmrc"
+
+  network:
+    allow:
+      - "github.com"
+      - "registry.npmjs.org"
+      - "registry.yarnpkg.com"
+      - "api.anthropic.com"
+    deny:
+      - "*"
+
+  credentials:
+    npm_token:
+      source: "env:NPM_TOKEN"
+      allowed_actions:
+        - "npm publish *"
+      max_uses: 3
+      require_approval: true
+
+    github_token:
+      source: "env:GITHUB_TOKEN"
+      allowed_actions:
+        - "git push *"
+        - "gh pr create *"
+        - "gh issue create *"
+      max_uses: 20
+      require_approval: false
+
+  shell:
+    allow:
+      - "npm test *"
+      - "npm run *"
+      - "npx *"
+      - "node *"
+      - "tsc *"
+    deny:
+      - "rm -rf *"
+      - "sudo *"
+      - "chmod 777 *"
+      - "npm config set *"
+    ask:
+      - "git push *"
+      - "npm publish *"
+      - "npm install --global *"

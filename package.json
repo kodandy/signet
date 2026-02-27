@@ -4,12 +4,16 @@
   "description": "Cryptographic authorization delegation layer for local AI agents",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "signet": "src/index.ts"
+  },
   "scripts": {
     "test": "vitest run"
   },
   "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^12.6.2",
+    "commander": "^14.0.3",
     "tweetnacl": "^1.0.3",
     "yaml": "^2.8.2"
   },

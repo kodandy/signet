@@ -1,0 +1,125 @@
+import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import type { Scope } from "../src/policy/scope";
+import { generateClaudeCodeSettings } from "../src/adapters/claude-code";
+import { generateWrappers, generatePathSetup } from "../src/adapters/generic";
+
+const testScope: Scope = {
+  filesystem: {
+    writable: ["./src/**"],
+    readable: ["./**"],
+    blocked: ["./.env", "~/.ssh/**"],
+  },
+  network: {
+    allow: ["github.com", "registry.npmjs.org"],
+    deny: ["*"],
+  },
+  shell: {
+    deny: ["rm -rf *", "sudo *"],
+    ask: ["git push *"],
+  },
+};
+
+describe("adapters/claude-code", () => {
+  const testDir = join(tmpdir(), `signet-adapter-test-${Date.now()}`);
+
+  beforeEach(() => {
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  test("generates .claude/settings.json with permissions", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settingsPath = join(testDir, ".claude", "settings.json");
+    expect(existsSync(settingsPath)).toBe(true);
+
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    expect(settings.permissions.deny).toContain("Bash(rm -rf *)");
+    expect(settings.permissions.deny).toContain("Bash(sudo *)");
+    expect(settings.permissions.deny).toContain("Write(./.env)");
+    expect(settings.permissions.ask).toContain("Bash(git push *)");
+  });
+
+  test("generates CLAUDE.md with signet section", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const claudeMdPath = join(testDir, "CLAUDE.md");
+    expect(existsSync(claudeMdPath)).toBe(true);
+
+    const content = readFileSync(claudeMdPath, "utf-8");
+    expect(content).toContain("<!-- signet:begin -->");
+    expect(content).toContain("<!-- signet:end -->");
+    expect(content).toContain("Blocked paths");
+    expect(content).toContain("`./.env`");
+    expect(content).toContain("`github.com`");
+  });
+
+  test("appends to existing CLAUDE.md", () => {
+    const claudeMdPath = join(testDir, "CLAUDE.md");
+    writeFileSync(claudeMdPath, "# My Project\n\nExisting content.\n");
+
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const content = readFileSync(claudeMdPath, "utf-8");
+    expect(content).toContain("# My Project");
+    expect(content).toContain("Existing content.");
+    expect(content).toContain("<!-- signet:begin -->");
+  });
+
+  test("updates existing signet section in CLAUDE.md", () => {
+    const claudeMdPath = join(testDir, "CLAUDE.md");
+    writeFileSync(claudeMdPath, "# My Project\n\n<!-- signet:begin -->\nold content\n<!-- signet:end -->\n");
+
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const content = readFileSync(claudeMdPath, "utf-8");
+    expect(content).not.toContain("old content");
+    expect(content).toContain("Blocked paths");
+  });
+});
+
+describe("adapters/generic", () => {
+  const testBinDir = join(tmpdir(), `signet-bin-test-${Date.now()}`);
+
+  afterEach(() => {
+    if (existsSync(testBinDir)) {
+      rmSync(testBinDir, { recursive: true, force: true });
+    }
+  });
+
+  test("generates wrapper scripts for deny/ask commands", () => {
+    const wrapped = generateWrappers(testScope, testBinDir);
+
+    expect(wrapped).toContain("rm");
+    expect(wrapped).toContain("sudo");
+    expect(wrapped).toContain("git");
+    expect(wrapped.length).toBe(3);
+
+    // ラッパースクリプトが存在
+    expect(existsSync(join(testBinDir, "rm"))).toBe(true);
+    expect(existsSync(join(testBinDir, "sudo"))).toBe(true);
+    expect(existsSync(join(testBinDir, "git"))).toBe(true);
+  });
+
+  test("wrapper script contains original command lookup", () => {
+    generateWrappers(testScope, testBinDir);
+
+    const script = readFileSync(join(testBinDir, "rm"), "utf-8");
+    expect(script).toContain("#!/usr/bin/env bash");
+    expect(script).toContain("signet wrapper for rm");
+    expect(script).toContain("exec \"$ORIGINAL\"");
+  });
+
+  test("generatePathSetup returns correct export", () => {
+    const setup = generatePathSetup("/home/user/.signet/bin");
+    expect(setup).toBe('export PATH="/home/user/.signet/bin:$PATH"');
+  });
+});

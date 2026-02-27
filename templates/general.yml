@@ -1,0 +1,33 @@
+version: 1
+defaults:
+  expires: "4h"
+
+scope:
+  filesystem:
+    writable:
+      - "./src/**"
+      - "./test/**"
+      - "./docs/**"
+    readable:
+      - "./**"
+    blocked:
+      - "./.env"
+      - "./.env.*"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+
+  network:
+    allow:
+      - "github.com"
+      - "registry.npmjs.org"
+    deny:
+      - "*"
+
+  shell:
+    deny:
+      - "rm -rf *"
+      - "sudo *"
+      - "chmod 777 *"
+    ask:
+      - "git push *"
+      - "npm publish *"

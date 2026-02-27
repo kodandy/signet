@@ -1,0 +1,63 @@
+version: 1
+defaults:
+  expires: "4h"
+
+scope:
+  filesystem:
+    writable:
+      - "./src/**"
+      - "./tests/**"
+      - "./docs/**"
+      - "./pyproject.toml"
+      - "./requirements.txt"
+    readable:
+      - "./**"
+    blocked:
+      - "./.env"
+      - "./.env.*"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "~/.pypirc"
+
+  network:
+    allow:
+      - "github.com"
+      - "pypi.org"
+      - "files.pythonhosted.org"
+    deny:
+      - "*"
+
+  credentials:
+    pypi_token:
+      source: "env:PYPI_TOKEN"
+      allowed_actions:
+        - "twine upload *"
+        - "poetry publish *"
+      max_uses: 3
+      require_approval: true
+
+    github_token:
+      source: "env:GITHUB_TOKEN"
+      allowed_actions:
+        - "git push *"
+        - "gh pr create *"
+      max_uses: 20
+      require_approval: false
+
+  shell:
+    allow:
+      - "python *"
+      - "pytest *"
+      - "pip install *"
+      - "poetry *"
+      - "ruff *"
+      - "mypy *"
+    deny:
+      - "rm -rf *"
+      - "sudo *"
+      - "chmod 777 *"
+      - "pip install --user *"
+    ask:
+      - "git push *"
+      - "twine upload *"
+      - "poetry publish *"
