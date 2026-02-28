@@ -1,11 +1,12 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 
 const VAULT_DIR = join(homedir(), ".signet", "vault");
 const VAULT_KEY_PATH = join(homedir(), ".signet", "vault.key");
+const COMMAND_TIMEOUT_MS = 30_000;
 
 export interface VaultConfig {
   envFiles?: string[];             // 退避する.envファイルパス (デフォルト: [".env"])
@@ -24,7 +25,7 @@ const STATE_PATH = join(homedir(), ".signet", "vault-state.json");
 
 function getVaultKey(): Buffer {
   if (!existsSync(VAULT_KEY_PATH)) {
-    const dir = join(VAULT_KEY_PATH, "..");
+    const dir = dirname(VAULT_KEY_PATH);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
@@ -46,7 +47,11 @@ function encrypt(data: string): string {
 
 function decrypt(data: string): string {
   const key = getVaultKey();
-  const [ivHex, encrypted] = data.split(":");
+  const parts = data.split(":");
+  if (parts.length !== 2) {
+    throw new Error("Invalid encrypted data format: expected 'iv:ciphertext'");
+  }
+  const [ivHex, encrypted] = parts;
   const iv = Buffer.from(ivHex, "hex");
   const decipher = createDecipheriv("aes-256-cbc", key, iv);
   let decrypted = decipher.update(encrypted, "hex", "utf-8");
@@ -60,7 +65,7 @@ function loadState(): VaultState | null {
 }
 
 function saveState(state: VaultState): void {
-  const dir = join(STATE_PATH, "..");
+  const dir = dirname(STATE_PATH);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
@@ -181,7 +186,7 @@ export function injectForCommand(
     const stdout = execSync(command, {
       env,
       encoding: "utf-8",
-      timeout: 30000,
+      timeout: COMMAND_TIMEOUT_MS,
     });
     return { stdout, stderr: "", exitCode: 0 };
   } catch (err: any) {

@@ -35,6 +35,16 @@ describe("policy/matcher", () => {
       expect(globMatch("./.env", "./.env")).toBe(true);
       expect(globMatch("./.env.*", "./.env.local")).toBe(true);
     });
+
+    test("multiple ** in pattern", () => {
+      expect(globMatch("a/**/b/**/c.ts", "a/x/b/y/c.ts")).toBe(true);
+      expect(globMatch("a/**/b/**/c.ts", "a/x/y/b/z/c.ts")).toBe(true);
+    });
+
+    test("empty pattern matches empty string", () => {
+      expect(globMatch("", "")).toBe(true);
+      expect(globMatch("", "foo")).toBe(false);
+    });
   });
 
   describe("matchFilesystem", () => {

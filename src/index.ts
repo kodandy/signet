@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -89,8 +89,8 @@ program
       if (state.evacuatedVars.length > 0) {
         console.log("  Evacuated env vars:", state.evacuatedVars.join(", "));
       }
-    } catch (err: any) {
-      console.error("Error:", err.message);
+    } catch (err: unknown) {
+      console.error("Error:", err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
   });
@@ -106,8 +106,8 @@ program
       if (state.evacuatedFiles.length > 0) {
         console.log("  Restored files:", state.evacuatedFiles.join(", "));
       }
-    } catch (err: any) {
-      console.error("Error:", err.message);
+    } catch (err: unknown) {
+      console.error("Error:", err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
   });
@@ -213,7 +213,6 @@ keysCmd
       return;
     }
 
-    const { readdirSync } = require("node:fs");
     const files = readdirSync(agentsDir) as string[];
     if (files.length === 0) {
       console.log("No registered agent keys.");

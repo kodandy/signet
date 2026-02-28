@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ActionRequest } from "../engine/evaluator";
@@ -21,6 +21,13 @@ export interface VerifyResult {
   entries_checked: number;
 }
 
+function csvEscape(value: string): string {
+  if (value.includes('"') || value.includes(",") || value.includes("\n")) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return `"${value}"`;
+}
+
 const SIGNET_DIR = join(homedir(), ".signet");
 const DEFAULT_DB_PATH = join(SIGNET_DIR, "audit.db");
 
@@ -37,7 +44,7 @@ export class AuditLogger {
   private db: Database.Database;
 
   constructor(dbPath: string = DEFAULT_DB_PATH) {
-    const dir = join(dbPath, "..");
+    const dir = dirname(dbPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
@@ -110,8 +117,16 @@ export class AuditLogger {
       }
 
       // chain_hashの再計算と検証
-      const request = JSON.parse(row.request_json) as ActionRequest;
-      const decision = JSON.parse(row.decision_json) as ActionDecision;
+      let request: ActionRequest;
+      let decision: ActionDecision;
+      try {
+        request = JSON.parse(row.request_json) as ActionRequest;
+        decision = JSON.parse(row.decision_json) as ActionDecision;
+      } catch {
+        errors.push(`Entry #${row.id}: corrupted JSON data`);
+        expectedPreviousHash = row.chain_hash;
+        continue;
+      }
       const expectedHash = computeChainHash(row.previous_hash, request, decision);
 
       if (row.chain_hash !== expectedHash) {
@@ -163,9 +178,9 @@ export class AuditLogger {
         row.id,
         row.timestamp,
         req.action,
-        `"${req.target}"`,
+        csvEscape(req.target),
         dec.allowed,
-        `"${dec.reason}"`,
+        csvEscape(dec.reason),
         dec.decided_by,
         row.chain_hash,
       ].join(",");

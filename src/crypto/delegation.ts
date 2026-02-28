@@ -21,6 +21,8 @@ export interface DelegationOpts {
   context_hash?: string;
 }
 
+const DEFAULT_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4時間
+
 /**
  * 署名対象となるトークンペイロードを正規化JSON文字列として生成。
  * signatureフィールドを除いた全フィールドをキー順ソートで直列化。
@@ -45,11 +47,29 @@ export function createDelegation(
   scope: Scope,
   opts?: DelegationOpts,
 ): DelegationToken {
+  // agentPubKeyのバリデーション
+  let decoded: Uint8Array;
+  try {
+    decoded = decodeBase64(agentPubKey);
+  } catch {
+    throw new Error("Invalid agentPubKey: not valid base64");
+  }
+  if (decoded.length !== 32) {
+    throw new Error(`Invalid agentPubKey: expected 32 bytes, got ${decoded.length}`);
+  }
+
   const now = new Date();
   const issuedAt = now.toISOString();
 
-  // デフォルト有効期限: 4時間
-  const defaultExpiry = new Date(now.getTime() + 4 * 60 * 60 * 1000);
+  // カスタム expires_at のバリデーション
+  if (opts?.expires_at !== undefined) {
+    const parsed = new Date(opts.expires_at);
+    if (isNaN(parsed.getTime())) {
+      throw new Error("Invalid expires_at: not a valid ISO 8601 date");
+    }
+  }
+
+  const defaultExpiry = new Date(now.getTime() + DEFAULT_EXPIRY_MS);
   const expiresAt = opts?.expires_at ?? defaultExpiry.toISOString();
 
   const payload: Omit<DelegationToken, "signature"> = {
@@ -81,12 +101,17 @@ export function verifyDelegation(
     return false;
   }
 
-  // signatureフィールドを除いたペイロードを復元
-  const { signature, ...payload } = token;
+  try {
+    // signatureフィールドを除いたペイロードを復元
+    const { signature, ...payload } = token;
 
-  const message = new TextEncoder().encode(canonicalize(payload));
-  const sig = decodeBase64(signature);
-  const pubKey = decodeBase64(userPubKey);
+    const message = new TextEncoder().encode(canonicalize(payload));
+    const sig = decodeBase64(signature);
+    const pubKey = decodeBase64(userPubKey);
 
-  return verify(message, sig, pubKey);
+    return verify(message, sig, pubKey);
+  } catch {
+    // 不正な base64 やデコードエラー時は検証失敗
+    return false;
+  }
 }

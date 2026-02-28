@@ -1,5 +1,8 @@
-import { describe, test, expect } from "vitest";
-import { parsePolicy } from "../src/policy/parser";
+import { describe, test, expect, afterEach } from "vitest";
+import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { parsePolicy, parsePolicyFile } from "../src/policy/parser";
 
 // ARCHITECTURE.mdのsignet.yml例
 const fullYaml = `
@@ -170,6 +173,31 @@ scope:
       - 123
 `),
       ).toThrow("must be a string");
+    });
+  });
+
+  describe("parsePolicyFile", () => {
+    const testDir = join(tmpdir(), `signet-parser-test-${Date.now()}`);
+
+    afterEach(() => {
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("reads and parses a YAML file", () => {
+      mkdirSync(testDir, { recursive: true });
+      const filePath = join(testDir, "signet.yml");
+      writeFileSync(filePath, `version: 1\nscope:\n  shell:\n    deny:\n      - "rm -rf /"\n`);
+
+      const config = parsePolicyFile(filePath);
+
+      expect(config.version).toBe(1);
+      expect(config.scope.shell?.deny).toEqual(["rm -rf /"]);
+    });
+
+    test("throws on non-existent file", () => {
+      expect(() => parsePolicyFile("/nonexistent/signet.yml")).toThrow();
     });
   });
 });

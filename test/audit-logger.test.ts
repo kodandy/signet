@@ -160,6 +160,25 @@ describe("audit/logger", () => {
       expect(lines[1]).toContain("shell");
       expect(lines[1]).toContain("npm test");
     });
+
+    test("CSV escapes values containing commas and double quotes", () => {
+      const agentKey = generateKeyPair();
+      const decision: ActionDecision = {
+        request_hash: "h1",
+        allowed: false,
+        reason: 'Denied: path "src/foo.ts", blocked',
+        decided_by: "policy",
+        timestamp: new Date().toISOString(),
+        signature: "test-signature",
+      };
+      logger.log(makeTestRequest(agentKey), decision);
+
+      const csv = logger.exportLog("csv");
+      const lines = csv.split("\n");
+
+      // ダブルクォートが "" にエスケープされること
+      expect(lines[1]).toContain('""src/foo.ts""');
+    });
   });
 
   describe("getEntries", () => {
@@ -186,6 +205,20 @@ describe("audit/logger", () => {
 
       expect(entries).toHaveLength(2);
       expect(entries[0].id).toBe(3);
+    });
+
+    test("returns empty array for empty log", () => {
+      const entries = logger.getEntries();
+      expect(entries).toHaveLength(0);
+    });
+
+    test("getEntries(0) returns all entries (0 is falsy, no limit applied)", () => {
+      const agentKey = generateKeyPair();
+      logger.log(makeTestRequest(agentKey), makeTestDecision("h1"));
+
+      // limit=0 is falsy, so getEntries treats it as "no limit"
+      const entries = logger.getEntries(0);
+      expect(entries).toHaveLength(1);
     });
   });
 });

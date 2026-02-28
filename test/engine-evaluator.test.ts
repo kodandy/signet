@@ -198,6 +198,17 @@ describe("engine/evaluator", () => {
       expect(decision.allowed).toBe(false);
       expect(decision.reason).toContain("Requires user approval");
     });
+
+    test("propagates error when onAsk callback throws", async () => {
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "git push origin main");
+      await expect(
+        evaluate(request, delegation, testScope, userKey, {
+          onAsk: async () => {
+            throw new Error("callback error");
+          },
+        }),
+      ).rejects.toThrow("callback error");
+    });
   });
 
   describe("クレデンシャル判定", () => {

@@ -10,6 +10,7 @@ import {
   decodeBase64,
   saveKeyPair,
   loadKeyPair,
+  getSignetDir,
 } from "../src/crypto/keys";
 
 describe("crypto/keys", () => {
@@ -94,6 +95,19 @@ describe("crypto/keys", () => {
     });
   });
 
+  describe("getSignetDir", () => {
+    test("returns a path ending with .signet", () => {
+      const dir = getSignetDir();
+      expect(dir).toMatch(/\.signet$/);
+    });
+
+    test("returns a path under homedir", () => {
+      const { homedir } = require("node:os");
+      const dir = getSignetDir();
+      expect(dir.startsWith(homedir())).toBe(true);
+    });
+  });
+
   describe("saveKeyPair / loadKeyPair", () => {
     const testDir = join(tmpdir(), `signet-test-${Date.now()}`);
     const testKeyPath = join(testDir, "test.key");
@@ -136,6 +150,14 @@ describe("crypto/keys", () => {
       expect(() => loadKeyPair("/nonexistent/path/key.key")).toThrow(
         "Key file not found",
       );
+    });
+
+    test("loadKeyPair throws on malformed JSON", () => {
+      const badPath = join(testDir, "bad.key");
+      const { writeFileSync } = require("node:fs");
+      writeFileSync(badPath, "not-json-content");
+
+      expect(() => loadKeyPair(badPath)).toThrow();
     });
 
     test("creates parent directories if missing", () => {
