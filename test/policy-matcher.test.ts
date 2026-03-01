@@ -113,6 +113,15 @@ describe("policy/matcher", () => {
     test("returns no_match when scope is undefined", () => {
       expect(matchNetwork(undefined, "example.com")).toBe("no_match");
     });
+
+    test("matches IP address when listed in allow", () => {
+      const scope = {
+        allow: ["192.168.1.1"],
+        deny: ["*"],
+      };
+      expect(matchNetwork(scope, "192.168.1.1")).toBe("allow");
+      expect(matchNetwork(scope, "10.0.0.1")).toBe("deny");
+    });
   });
 
   describe("matchShell", () => {
@@ -159,6 +168,20 @@ describe("policy/matcher", () => {
     test("returns no_match when scope is undefined", () => {
       expect(matchShell(undefined, "ls")).toBe("no_match");
     });
+
+    test("returns no_match for empty scope object", () => {
+      expect(matchShell({}, "ls -la")).toBe("no_match");
+    });
+  });
+
+  describe("matchFilesystem edge cases", () => {
+    test("writable path takes priority over readable for write action", () => {
+      const fs = {
+        writable: ["./src/**"],
+        readable: ["./src/**"],
+      };
+      expect(matchFilesystem(fs, "./src/foo.ts", "write")).toBe("allow");
+    });
   });
 
   describe("matchCredential", () => {
@@ -201,6 +224,16 @@ describe("policy/matcher", () => {
 
     test("allows when no action specified and no require_approval", () => {
       expect(matchCredential(creds, "github_token")).toBe("allow");
+    });
+
+    test("denies all actions when allowed_actions is empty array", () => {
+      const emptyCreds = {
+        restricted_key: {
+          allowed_actions: [] as string[],
+          require_approval: false,
+        },
+      };
+      expect(matchCredential(emptyCreds, "restricted_key", "any action")).toBe("deny");
     });
   });
 });

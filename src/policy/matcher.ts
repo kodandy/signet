@@ -185,8 +185,8 @@ export function matchCredential(
   const rule = scope[credName];
   if (!rule) return "deny";
 
-  // allowed_actionsが定義されていてアクション指定がある場合
-  if (action && rule.allowed_actions && rule.allowed_actions.length > 0) {
+  // allowed_actionsが定義されていてアクション指定がある場合（空配列は全拒否）
+  if (action && rule.allowed_actions) {
     const actionAllowed = rule.allowed_actions.some((p) =>
       globMatch(p, action),
     );

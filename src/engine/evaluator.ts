@@ -197,9 +197,13 @@ export function verifyDecision(
   decision: ActionDecision,
   userPubKey: string,
 ): boolean {
-  const { signature, ...payload } = decision;
-  const msg = decisionPayload(payload);
-  const sig = decodeBase64(signature);
-  const pubKey = decodeBase64(userPubKey);
-  return verify(msg, sig, pubKey);
+  try {
+    const { signature, ...payload } = decision;
+    const msg = decisionPayload(payload);
+    const sig = decodeBase64(signature);
+    const pubKey = decodeBase64(userPubKey);
+    return verify(msg, sig, pubKey);
+  } catch {
+    return false;
+  }
 }

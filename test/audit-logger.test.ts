@@ -221,4 +221,29 @@ describe("audit/logger", () => {
       expect(entries).toHaveLength(1);
     });
   });
+
+  describe("close", () => {
+    test("throws when log() is called after close()", () => {
+      const agentKey = generateKeyPair();
+      logger.close();
+
+      expect(() =>
+        logger.log(makeTestRequest(agentKey), makeTestDecision("h1")),
+      ).toThrow();
+    });
+  });
+
+  describe("large chain verification", () => {
+    test("verifies chain with 50+ entries", () => {
+      const agentKey = generateKeyPair();
+
+      for (let i = 0; i < 50; i++) {
+        logger.log(makeTestRequest(agentKey), makeTestDecision(`h${i}`));
+      }
+
+      const result = logger.verify();
+      expect(result.valid).toBe(true);
+      expect(result.entries_checked).toBe(50);
+    });
+  });
 });

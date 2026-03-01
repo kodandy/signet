@@ -62,6 +62,25 @@ describe("vault/manager", () => {
       // 元の環境変数が変わっていないことを確認
       expect(process.env.HOME).toBe(originalEnv.HOME);
     });
+
+    test("handles special characters in credential values", () => {
+      const specialValue = 'pa$$word"with`special';
+      const result = injectForCommand(
+        "SPECIAL_CRED",
+        specialValue,
+        "printenv SPECIAL_CRED",
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe(specialValue);
+    });
+
+    test("captures stderr from failing command", () => {
+      const result = injectForCommand("X", "v", "echo error-output >&2 && false");
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("error-output");
+    });
   });
 
   describe("activate", () => {

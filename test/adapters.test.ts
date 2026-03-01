@@ -84,6 +84,14 @@ describe("adapters/claude-code", () => {
     expect(content).not.toContain("old content");
     expect(content).toContain("Blocked paths");
   });
+
+  test("throws when existing settings.json contains malformed JSON", () => {
+    const claudeDir = join(testDir, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "settings.json"), "{ not valid json }}}");
+
+    expect(() => generateClaudeCodeSettings(testScope, testDir)).toThrow();
+  });
 });
 
 describe("adapters/generic", () => {
@@ -121,5 +129,12 @@ describe("adapters/generic", () => {
   test("generatePathSetup returns correct export", () => {
     const setup = generatePathSetup("/home/user/.signet/bin");
     expect(setup).toBe('export PATH="/home/user/.signet/bin:$PATH"');
+  });
+
+  test("generateWrappers returns empty array for scope with no shell rules", () => {
+    const emptyScope: Scope = { filesystem: { readable: ["./**"] } };
+    const wrapped = generateWrappers(emptyScope, testBinDir);
+
+    expect(wrapped).toEqual([]);
   });
 });

@@ -260,6 +260,27 @@ describe("engine/evaluator", () => {
 
       expect(decision.request_hash).toMatch(/^[a-f0-9]{64}$/);
     });
+
+    test("signActionRequest produces consistent signature for same input", () => {
+      const fixedTimestamp = "2025-01-01T00:00:00.000Z";
+      const req1 = signActionRequest(
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp },
+        agentKey.secretKey,
+      );
+      const req2 = signActionRequest(
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp },
+        agentKey.secretKey,
+      );
+
+      expect(req1.signature).toBe(req2.signature);
+    });
+
+    test("verifyDecision returns false for invalid base64 pubkey", async () => {
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const decision = await evaluate(request, delegation, testScope, userKey);
+
+      expect(verifyDecision(decision, "!!!invalid-base64!!!")).toBe(false);
+    });
   });
 
   describe("未知のアクション", () => {
