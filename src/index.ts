@@ -1,8 +1,11 @@
-#!/usr/bin/env node
 import { Command } from "commander";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 import { generateKeyPair, saveKeyPair, loadKeyPair, encodeBase64 } from "./crypto/keys";
 import { createDelegation } from "./crypto/delegation";
@@ -213,7 +216,6 @@ keysCmd
       return;
     }
 
-    const { readdirSync } = require("node:fs");
     const files = readdirSync(agentsDir) as string[];
     if (files.length === 0) {
       console.log("No registered agent keys.");

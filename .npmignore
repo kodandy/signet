@@ -1,0 +1,13 @@
+src/
+test/
+docs/
+.claude/
+.github/
+*.test.ts
+tsconfig.json
+vitest.config.*
+flake.nix
+flake.lock
+.envrc
+.direnv/
+CLAUDE.md
