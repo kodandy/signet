@@ -9,6 +9,7 @@ import {
   matchCredential,
   type MatchResult,
 } from "../policy/matcher";
+import type { AuditLogger } from "../audit/logger";
 
 export interface ActionRequest {
   agent_id: string;       // agent public key (base64)
@@ -33,6 +34,8 @@ export type AskCallback = (request: ActionRequest) => Promise<boolean>;
 
 export interface EvaluateOptions {
   onAsk?: AskCallback;
+  auditLogger?: AuditLogger;     // 使用回数カウント・トークン無効化チェック用
+  context_hash?: string;          // リクエスト時のコンテキストハッシュ
 }
 
 /**
@@ -146,6 +149,33 @@ export async function evaluate(
     return makeDecision(reqHash, false, "Delegation token expired", "policy", userKey);
   }
 
+  // 4.5 トークン無効化チェック
+  if (opts?.auditLogger) {
+    const tokenHash = createHash("sha256")
+      .update(delegation.signature)
+      .digest("hex");
+
+    if (opts.auditLogger.isTokenRevoked(tokenHash)) {
+      return makeDecision(reqHash, false, "Delegation token has been revoked", "policy", userKey);
+    }
+
+    // 4.6 delegation max_uses チェック
+    if (delegation.max_uses !== undefined) {
+      const usageKey = `delegation:${tokenHash}`;
+      const currentCount = opts.auditLogger.getUsageCount(usageKey);
+      if (currentCount >= delegation.max_uses) {
+        return makeDecision(reqHash, false, `Delegation token max_uses exceeded (${delegation.max_uses})`, "policy", userKey);
+      }
+    }
+
+    // 4.7 context_hash 検証
+    if (delegation.context_hash && opts.context_hash) {
+      if (delegation.context_hash !== opts.context_hash) {
+        return makeDecision(reqHash, false, "Context hash mismatch", "policy", userKey);
+      }
+    }
+  }
+
   // 5. ポリシーマッチング
   const matchResult = matchAction(request, scope);
 
@@ -154,13 +184,61 @@ export async function evaluate(
   }
 
   if (matchResult === "allow") {
+    // credential max_uses チェック
+    if (request.action === "use_credential" && opts?.auditLogger && scope.credentials) {
+      const credRule = scope.credentials[request.target];
+      if (credRule?.max_uses !== undefined) {
+        const credKey = `credential:${request.target}`;
+        const currentCount = opts.auditLogger.getUsageCount(credKey);
+        if (currentCount >= credRule.max_uses) {
+          return makeDecision(reqHash, false, `Credential max_uses exceeded for ${request.target} (${credRule.max_uses})`, "policy", userKey);
+        }
+        opts.auditLogger.incrementUsage(credKey);
+      }
+    }
+
+    // delegation token 使用カウントをインクリメント
+    if (opts?.auditLogger && delegation.max_uses !== undefined) {
+      const tokenHash = createHash("sha256")
+        .update(delegation.signature)
+        .digest("hex");
+      opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
+    }
+
     return makeDecision(reqHash, true, `Allowed by policy: ${request.action} on ${request.target}`, "policy", userKey);
   }
 
   if (matchResult === "ask") {
     if (opts?.onAsk) {
+      // credential max_uses チェック（ask判定のクレデンシャルにも適用）
+      if (request.action === "use_credential" && opts?.auditLogger && scope.credentials) {
+        const credRule = scope.credentials[request.target];
+        if (credRule?.max_uses !== undefined) {
+          const credKey = `credential:${request.target}`;
+          const currentCount = opts.auditLogger.getUsageCount(credKey);
+          if (currentCount >= credRule.max_uses) {
+            return makeDecision(reqHash, false, `Credential max_uses exceeded for ${request.target} (${credRule.max_uses})`, "policy", userKey);
+          }
+        }
+      }
+
       const approved = await opts.onAsk(request);
       if (approved) {
+        // 承認時に使用カウントをインクリメント
+        if (opts.auditLogger) {
+          if (request.action === "use_credential" && scope.credentials) {
+            const credRule = scope.credentials[request.target];
+            if (credRule?.max_uses !== undefined) {
+              opts.auditLogger.incrementUsage(`credential:${request.target}`);
+            }
+          }
+          if (delegation.max_uses !== undefined) {
+            const tokenHash = createHash("sha256")
+              .update(delegation.signature)
+              .digest("hex");
+            opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
+          }
+        }
         return makeDecision(reqHash, true, `Approved by user: ${request.action} on ${request.target}`, "user", userKey);
       }
       return makeDecision(reqHash, false, `Rejected by user: ${request.action} on ${request.target}`, "user", userKey);

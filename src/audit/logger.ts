@@ -63,6 +63,23 @@ export class AuditLogger {
         previous_hash TEXT NOT NULL
       )
     `);
+
+    // 使用回数カウンター（delegation token max_uses / credential max_uses）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS usage_counter (
+        key TEXT PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    // 無効化されたトークンの記録
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS revoked_tokens (
+        token_hash TEXT PRIMARY KEY,
+        revoked_at TEXT NOT NULL,
+        reason TEXT
+      )
+    `);
   }
 
   log(request: ActionRequest, decision: ActionDecision): AuditEntry {
@@ -212,6 +229,58 @@ export class AuditLogger {
       chain_hash: row.chain_hash,
       previous_hash: row.previous_hash,
     }));
+  }
+
+  /**
+   * 使用回数をインクリメントして現在のカウントを返す
+   */
+  incrementUsage(key: string): number {
+    this.db.prepare(
+      "INSERT INTO usage_counter (key, count) VALUES (?, 1) ON CONFLICT(key) DO UPDATE SET count = count + 1",
+    ).run(key);
+
+    const row = this.db.prepare(
+      "SELECT count FROM usage_counter WHERE key = ?",
+    ).get(key) as { count: number };
+    return row.count;
+  }
+
+  /**
+   * 現在の使用回数を取得
+   */
+  getUsageCount(key: string): number {
+    const row = this.db.prepare(
+      "SELECT count FROM usage_counter WHERE key = ?",
+    ).get(key) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /**
+   * トークンを無効化する
+   */
+  revokeToken(tokenHash: string, reason?: string): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO revoked_tokens (token_hash, revoked_at, reason) VALUES (?, ?, ?)",
+    ).run(tokenHash, new Date().toISOString(), reason ?? null);
+  }
+
+  /**
+   * トークンが無効化されているかチェック
+   */
+  isTokenRevoked(tokenHash: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM revoked_tokens WHERE token_hash = ?",
+    ).get(tokenHash);
+    return row !== undefined;
+  }
+
+  /**
+   * 無効化されたトークン一覧
+   */
+  listRevokedTokens(): Array<{ token_hash: string; revoked_at: string; reason: string | null }> {
+    return this.db.prepare(
+      "SELECT token_hash, revoked_at, reason FROM revoked_tokens ORDER BY revoked_at DESC",
+    ).all() as Array<{ token_hash: string; revoked_at: string; reason: string | null }>;
   }
 
   close(): void {

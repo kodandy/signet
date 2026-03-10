@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -10,6 +11,8 @@ import { parsePolicyFile } from "./policy/parser";
 import { matchShell, matchFilesystem, matchNetwork, matchCredential } from "./policy/matcher";
 import { AuditLogger } from "./audit/logger";
 import { activate, deactivate, getVaultState } from "./vault/manager";
+import { generateClaudeCodeSettings } from "./adapters/claude-code";
+import { generateWrappers, generatePathSetup } from "./adapters/generic";
 
 const SIGNET_DIR = join(homedir(), ".signet");
 
@@ -62,7 +65,9 @@ program
 
     // 4. Claude Code adapter（オプション）
     if (opts.claudeCode) {
-      console.log("Claude Code adapter setup: run 'signet adapt claude-code'");
+      const config = parsePolicyFile(resolve("signet.yml"));
+      generateClaudeCodeSettings(config.scope, process.cwd());
+      console.log("Claude Code adapter configured (.claude/settings.json + CLAUDE.md)");
     }
 
     console.log("\nSetup complete. Edit signet.yml to customize your policy.");
@@ -224,6 +229,96 @@ keysCmd
         const pubKey = readFileSync(join(agentsDir, file), "utf-8").trim();
         console.log(`  ${file.replace(".pub", "")}: ${pubKey}`);
       }
+    }
+  });
+
+// ─── signet revoke ───
+program
+  .command("revoke <token-signature>")
+  .description("Revoke a delegation token by its signature (base64 or hash)")
+  .option("--reason <reason>", "Reason for revocation")
+  .action((tokenSig: string, opts) => {
+    const logger = new AuditLogger();
+
+    // signature → SHA-256 hash（既にhex形式の場合はそのまま使用）
+    const tokenHash = /^[a-f0-9]{64}$/.test(tokenSig)
+      ? tokenSig
+      : createHash("sha256").update(tokenSig).digest("hex");
+
+    if (logger.isTokenRevoked(tokenHash)) {
+      console.log("Token is already revoked.");
+      logger.close();
+      return;
+    }
+
+    logger.revokeToken(tokenHash, opts.reason);
+    console.log(`Token revoked: ${tokenHash.substring(0, 16)}...`);
+    if (opts.reason) {
+      console.log(`  Reason: ${opts.reason}`);
+    }
+    logger.close();
+  });
+
+// ─── signet revoked ───
+program
+  .command("revoked")
+  .description("List revoked delegation tokens")
+  .action(() => {
+    const logger = new AuditLogger();
+    const tokens = logger.listRevokedTokens();
+
+    if (tokens.length === 0) {
+      console.log("No revoked tokens.");
+    } else {
+      for (const t of tokens) {
+        console.log(`  ${t.token_hash.substring(0, 16)}... revoked at ${t.revoked_at}${t.reason ? ` (${t.reason})` : ""}`);
+      }
+    }
+    logger.close();
+  });
+
+// ─── signet adapt ───
+const adaptCmd = program
+  .command("adapt")
+  .description("Generate adapter settings for a specific agent");
+
+adaptCmd
+  .command("claude-code")
+  .description("Generate Claude Code settings from signet.yml")
+  .option("--project-dir <dir>", "Project directory", process.cwd())
+  .action((opts) => {
+    const configPath = resolve("signet.yml");
+    if (!existsSync(configPath)) {
+      console.error("Error: signet.yml not found. Run 'signet init' first.");
+      process.exit(1);
+    }
+
+    const config = parsePolicyFile(configPath);
+    generateClaudeCodeSettings(config.scope, opts.projectDir);
+    console.log("Claude Code adapter configured:");
+    console.log("  .claude/settings.json — permissions updated");
+    console.log("  CLAUDE.md — security policy section added");
+  });
+
+adaptCmd
+  .command("generic")
+  .description("Generate PATH wrapper scripts for generic agents")
+  .action(() => {
+    const configPath = resolve("signet.yml");
+    if (!existsSync(configPath)) {
+      console.error("Error: signet.yml not found. Run 'signet init' first.");
+      process.exit(1);
+    }
+
+    const config = parsePolicyFile(configPath);
+    const binDir = join(SIGNET_DIR, "bin");
+    const wrapped = generateWrappers(config.scope, binDir);
+
+    if (wrapped.length === 0) {
+      console.log("No shell rules to wrap.");
+    } else {
+      console.log(`Generated wrappers: ${wrapped.join(", ")}`);
+      console.log(`\nAdd to your shell profile:\n  ${generatePathSetup(binDir)}`);
     }
   });
 

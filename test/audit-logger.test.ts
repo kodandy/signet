@@ -233,6 +233,72 @@ describe("audit/logger", () => {
     });
   });
 
+  describe("usage counter", () => {
+    test("incrementUsage returns current count", () => {
+      expect(logger.incrementUsage("test:key1")).toBe(1);
+      expect(logger.incrementUsage("test:key1")).toBe(2);
+      expect(logger.incrementUsage("test:key1")).toBe(3);
+    });
+
+    test("getUsageCount returns 0 for unknown key", () => {
+      expect(logger.getUsageCount("nonexistent")).toBe(0);
+    });
+
+    test("getUsageCount returns correct count", () => {
+      logger.incrementUsage("test:key2");
+      logger.incrementUsage("test:key2");
+      expect(logger.getUsageCount("test:key2")).toBe(2);
+    });
+
+    test("different keys are independent", () => {
+      logger.incrementUsage("key:a");
+      logger.incrementUsage("key:a");
+      logger.incrementUsage("key:b");
+
+      expect(logger.getUsageCount("key:a")).toBe(2);
+      expect(logger.getUsageCount("key:b")).toBe(1);
+    });
+  });
+
+  describe("token revocation", () => {
+    test("revokeToken and isTokenRevoked", () => {
+      const hash = "a".repeat(64);
+
+      expect(logger.isTokenRevoked(hash)).toBe(false);
+      logger.revokeToken(hash, "compromised");
+      expect(logger.isTokenRevoked(hash)).toBe(true);
+    });
+
+    test("revokeToken without reason", () => {
+      const hash = "b".repeat(64);
+      logger.revokeToken(hash);
+      expect(logger.isTokenRevoked(hash)).toBe(true);
+    });
+
+    test("listRevokedTokens returns all revoked tokens", () => {
+      logger.revokeToken("c".repeat(64), "reason1");
+      logger.revokeToken("d".repeat(64), "reason2");
+
+      const tokens = logger.listRevokedTokens();
+      expect(tokens).toHaveLength(2);
+      const reasons = tokens.map(t => t.reason).sort();
+      expect(reasons).toEqual(["reason1", "reason2"]);
+    });
+
+    test("listRevokedTokens returns empty for no revocations", () => {
+      expect(logger.listRevokedTokens()).toHaveLength(0);
+    });
+
+    test("revoking same token twice is idempotent", () => {
+      const hash = "e".repeat(64);
+      logger.revokeToken(hash, "first");
+      logger.revokeToken(hash, "second");
+
+      expect(logger.isTokenRevoked(hash)).toBe(true);
+      expect(logger.listRevokedTokens()).toHaveLength(1);
+    });
+  });
+
   describe("large chain verification", () => {
     test("verifies chain with 50+ entries", () => {
       const agentKey = generateKeyPair();
