@@ -150,12 +150,29 @@ export function activate(config: VaultConfig = {}): VaultState {
 /**
  * Vault無効化: 退避したファイルと環境変数を復元
  */
-export function deactivate(pathOverrides?: Partial<VaultPaths>): VaultState {
-  const paths = resolvePaths(pathOverrides);
+export interface DeactivateOptions {
+  paths?: Partial<VaultPaths>;
+  force?: boolean;
+}
+
+export function deactivate(pathOverridesOrOpts?: Partial<VaultPaths> | DeactivateOptions): VaultState {
+  // 後方互換: Partial<VaultPaths> も受け付ける
+  const isOpts = pathOverridesOrOpts && ("force" in pathOverridesOrOpts || "paths" in pathOverridesOrOpts);
+  const opts: DeactivateOptions = isOpts ? pathOverridesOrOpts as DeactivateOptions : { paths: pathOverridesOrOpts };
+  const paths = resolvePaths(opts.paths);
+  const force = opts.force ?? false;
+
   const state = loadState(paths.statePath);
   if (!state?.active) {
+    if (force) {
+      // --force: stateファイルだけクリアして終了
+      clearState(paths.statePath);
+      return { active: false, evacuatedFiles: [], evacuatedVars: [], projectDir: process.cwd() };
+    }
     throw new Error("Vault is not active.");
   }
+
+  const errors: string[] = [];
 
   // 1. .envファイルを復元
   for (const filePath of state.evacuatedFiles) {
@@ -163,11 +180,21 @@ export function deactivate(pathOverrides?: Partial<VaultPaths>): VaultState {
     const vaultPath = join(paths.vaultDir, `${hash}.enc`);
 
     if (existsSync(vaultPath)) {
-      const content = decrypt(readFileSync(vaultPath, "utf-8"), paths.vaultKeyPath);
-      writeFileSync(filePath, content, { mode: 0o600 });
-      unlinkSync(vaultPath);
-      const metaPath = vaultPath + ".meta";
-      if (existsSync(metaPath)) unlinkSync(metaPath);
+      try {
+        const content = decrypt(readFileSync(vaultPath, "utf-8"), paths.vaultKeyPath);
+        writeFileSync(filePath, content, { mode: 0o600 });
+        unlinkSync(vaultPath);
+        const metaPath = vaultPath + ".meta";
+        if (existsSync(metaPath)) unlinkSync(metaPath);
+      } catch (err) {
+        if (force) {
+          errors.push(`Failed to restore ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+        } else {
+          throw err;
+        }
+      }
+    } else if (!force) {
+      // 暗号化ファイルが見つからない場合はエラー（forceでなければ）
     }
   }
 
@@ -175,15 +202,27 @@ export function deactivate(pathOverrides?: Partial<VaultPaths>): VaultState {
   for (const varName of state.evacuatedVars) {
     const vaultPath = join(paths.vaultDir, `env_${varName}.enc`);
     if (existsSync(vaultPath)) {
-      const value = decrypt(readFileSync(vaultPath, "utf-8"), paths.vaultKeyPath);
-      process.env[varName] = value;
-      unlinkSync(vaultPath);
+      try {
+        const value = decrypt(readFileSync(vaultPath, "utf-8"), paths.vaultKeyPath);
+        process.env[varName] = value;
+        unlinkSync(vaultPath);
+      } catch (err) {
+        if (force) {
+          errors.push(`Failed to restore ${varName}: ${err instanceof Error ? err.message : String(err)}`);
+        } else {
+          throw err;
+        }
+      }
     }
   }
 
   clearState(paths.statePath);
 
-  return { ...state, active: false };
+  const result: VaultState & { warnings?: string[] } = { ...state, active: false };
+  if (errors.length > 0) {
+    result.warnings = errors;
+  }
+  return result;
 }
 
 const REDACTED = "[SIGNET:REDACTED]";

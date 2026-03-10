@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -279,6 +279,31 @@ describe("vault/manager", () => {
 
     test("throws when vault is not active", () => {
       expect(() => deactivate(paths)).toThrow("Vault is not active");
+    });
+
+    test("force deactivate clears state even when vault is not active", () => {
+      const state = deactivate({ paths, force: true });
+      expect(state.active).toBe(false);
+    });
+
+    test("force deactivate recovers when encrypted files are missing", () => {
+      const envPath = join(projectDir, ".env");
+      writeFileSync(envPath, "SECRET=abc");
+
+      activate({ projectDir, paths });
+      expect(existsSync(envPath)).toBe(false);
+
+      // 暗号化ファイルを手動で削除（破損シミュレーション）
+      const vaultFiles = readdirSync(paths.vaultDir);
+      for (const f of vaultFiles) {
+        unlinkSync(join(paths.vaultDir, f));
+      }
+
+      // 通常のdeactivateではファイル復元をスキップするが状態はクリアされる
+      const state = deactivate({ paths, force: true }) as any;
+      expect(state.active).toBe(false);
+      // vault stateファイルはクリアされる
+      expect(getVaultState(paths)).toBeNull();
     });
   });
 

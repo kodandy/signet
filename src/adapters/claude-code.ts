@@ -20,11 +20,14 @@ export function generateClaudeCodeSettings(scope: Scope, projectDir: string): vo
     ? JSON.parse(readFileSync(settingsPath, "utf-8"))
     : {};
 
+  const generated = generatePermissions(scope);
+  const existingPerms = existing.permissions ?? {};
   const settings = {
     ...existing,
     permissions: {
-      ...existing.permissions,
-      ...generatePermissions(scope),
+      ...existingPerms,
+      deny: mergeUnique(existingPerms.deny, generated.deny),
+      ask: mergeUnique(existingPerms.ask, generated.ask),
     },
   };
 
@@ -51,7 +54,13 @@ export function generateClaudeCodeSettings(scope: Scope, projectDir: string): vo
   }
 }
 
-function generatePermissions(scope: Scope): Record<string, unknown> {
+function mergeUnique(existing: string[] | undefined, added: string[]): string[] {
+  const set = new Set(existing ?? []);
+  for (const item of added) set.add(item);
+  return [...set];
+}
+
+function generatePermissions(scope: Scope): Record<string, string[]> {
   const deny: string[] = [];
   const ask: string[] = [];
 

@@ -85,6 +85,50 @@ describe("adapters/claude-code", () => {
     expect(content).toContain("Blocked paths");
   });
 
+  test("merges with existing permissions instead of overwriting", () => {
+    const claudeDir = join(testDir, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(
+      join(claudeDir, "settings.json"),
+      JSON.stringify({
+        permissions: {
+          deny: ["Bash(curl *)", "Bash(wget *)"],
+          ask: ["Bash(docker *)"],
+          allow: ["Read(**)"],
+        },
+      }),
+    );
+
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf-8"));
+    // existing deny rules preserved
+    expect(settings.permissions.deny).toContain("Bash(curl *)");
+    expect(settings.permissions.deny).toContain("Bash(wget *)");
+    // new signet deny rules added
+    expect(settings.permissions.deny).toContain("Bash(rm -rf *)");
+    expect(settings.permissions.deny).toContain("Bash(sudo *)");
+    // existing ask rules preserved
+    expect(settings.permissions.ask).toContain("Bash(docker *)");
+    // new signet ask rules added
+    expect(settings.permissions.ask).toContain("Bash(git push *)");
+    // non-deny/ask permissions preserved
+    expect(settings.permissions.allow).toEqual(["Read(**)"]);
+  });
+
+  test("deduplicates when running adapter twice", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    const denyCount = settings.permissions.deny.filter(
+      (r: string) => r === "Bash(rm -rf *)",
+    ).length;
+    expect(denyCount).toBe(1);
+  });
+
   test("throws when existing settings.json contains malformed JSON", () => {
     const claudeDir = join(testDir, ".claude");
     mkdirSync(claudeDir, { recursive: true });

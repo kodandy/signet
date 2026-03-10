@@ -130,16 +130,27 @@ program
 program
   .command("deactivate")
   .description("Deactivate vault and restore credentials")
-  .action(() => {
+  .option("--force", "Force deactivate even if restoration fails (use when vault is stuck)")
+  .action((opts) => {
     try {
-      const state = deactivate();
-      console.log("Vault deactivated");
-      if (state.evacuatedFiles.length > 0) {
-        console.log("  Restored files:", state.evacuatedFiles.join(", "));
+      const state = deactivate({ force: opts.force }) as any;
+      if (opts.force && state.warnings?.length) {
+        console.log("Vault force-deactivated with warnings:");
+        for (const w of state.warnings) {
+          console.log(`  \u26A0\uFE0F  ${w}`);
+        }
+      } else {
+        console.log("Vault deactivated");
+        if (state.evacuatedFiles.length > 0) {
+          console.log("  Restored files:", state.evacuatedFiles.join(", "));
+        }
       }
       console.log("\nCredentials restored. Run 'signet activate' to re-protect.");
     } catch (err: unknown) {
       console.error("Error:", err instanceof Error ? err.message : String(err));
+      if (!opts.force) {
+        console.error("Hint: Use --force to clear vault state even if restoration fails.");
+      }
       process.exit(1);
     }
   });
@@ -365,6 +376,21 @@ program
         console.log(tokenJson);
       }
 
+      // トークンメタデータを保存（リスト表示用）
+      const tokensDir = join(SIGNET_DIR, "tokens");
+      if (!existsSync(tokensDir)) {
+        mkdirSync(tokensDir, { recursive: true, mode: 0o700 });
+      }
+      const sigHash = createHash("sha256").update(token.signature).digest("hex");
+      const meta = {
+        signature_hash: sigHash,
+        subject: token.subject,
+        issued_at: token.issued_at,
+        expires_at: token.expires_at,
+        max_uses: token.max_uses,
+      };
+      writeFileSync(join(tokensDir, `${sigHash.slice(0, 16)}.json`), JSON.stringify(meta, null, 2), { mode: 0o600 });
+
       // Summary to stderr so it doesn't pollute JSON output when piped
       const expiresAt = new Date(token.expires_at);
       console.error(`\nDelegation issued:`);
@@ -465,6 +491,65 @@ keysCmd
     console.log(`Registered agent key: ${name}`);
     console.log(`  Public key: ${pubkey.substring(0, 24)}...`);
     console.log(`\nNext: signet delegate ${pubkey}`);
+  });
+
+// ─── signet tokens ───
+const tokensCmd = program
+  .command("tokens")
+  .description("Manage delegation tokens");
+
+tokensCmd
+  .command("list")
+  .description("List issued delegation tokens")
+  .action(() => {
+    const tokensDir = join(SIGNET_DIR, "tokens");
+    if (!existsSync(tokensDir)) {
+      console.log("No delegation tokens issued yet.");
+      console.log("\nNext: signet delegate <pubkey>");
+      return;
+    }
+
+    const files = (readdirSync(tokensDir) as string[]).filter((f: string) => f.endsWith(".json"));
+    if (files.length === 0) {
+      console.log("No delegation tokens issued yet.");
+      console.log("\nNext: signet delegate <pubkey>");
+      return;
+    }
+
+    const logger = new AuditLogger();
+    const now = new Date();
+
+    console.log("\nIssued delegation tokens:\n");
+    for (const file of files) {
+      const meta = JSON.parse(readFileSync(join(tokensDir, file), "utf-8"));
+      const expires = new Date(meta.expires_at);
+      const expired = expires < now;
+      const revoked = logger.isTokenRevoked(meta.signature_hash);
+
+      let status = "\u2705 active";
+      if (revoked) status = "\u274C revoked";
+      else if (expired) status = "\u23F0 expired";
+
+      // エージェント名を逆引き
+      const agentsDir = join(SIGNET_DIR, "agents");
+      let agentName = meta.subject.substring(0, 16) + "...";
+      if (existsSync(agentsDir)) {
+        for (const af of readdirSync(agentsDir) as string[]) {
+          if (af.endsWith(".pub")) {
+            const pubKey = readFileSync(join(agentsDir, af), "utf-8").trim();
+            if (pubKey === meta.subject) {
+              agentName = af.replace(".pub", "");
+              break;
+            }
+          }
+        }
+      }
+
+      console.log(`  ${status}  ${agentName}  issued ${meta.issued_at.slice(0, 16)}  expires ${meta.expires_at.slice(0, 16)}  sig:${meta.signature_hash.substring(0, 12)}...`);
+    }
+
+    logger.close();
+    console.log();
   });
 
 // ─── signet revoke ───
