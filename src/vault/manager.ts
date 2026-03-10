@@ -186,6 +186,21 @@ export function deactivate(pathOverrides?: Partial<VaultPaths>): VaultState {
   return { ...state, active: false };
 }
 
+const REDACTED = "[SIGNET:REDACTED]";
+
+/**
+ * 出力から秘密値をマスクする
+ */
+function redactSecret(output: string, secret: string): string {
+  if (!secret || secret.length < 4) return output;
+  let result = output;
+  // 平文の秘密値を置換
+  while (result.includes(secret)) {
+    result = result.split(secret).join(REDACTED);
+  }
+  return result;
+}
+
 /**
  * 一時的にクレデンシャルを注入してコマンドを実行
  */
@@ -202,11 +217,11 @@ export function injectForCommand(
       encoding: "utf-8",
       timeout: COMMAND_TIMEOUT_MS,
     });
-    return { stdout, stderr: "", exitCode: 0 };
+    return { stdout: redactSecret(stdout, credValue), stderr: "", exitCode: 0 };
   } catch (err: any) {
     return {
-      stdout: err.stdout ?? "",
-      stderr: err.stderr ?? err.message,
+      stdout: redactSecret(err.stdout ?? "", credValue),
+      stderr: redactSecret(err.stderr ?? err.message, credValue),
       exitCode: err.status ?? 1,
     };
   }

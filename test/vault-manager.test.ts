@@ -31,7 +31,8 @@ describe("vault/manager", () => {
       );
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout.trim()).toBe("secret-value-123");
+      // stdout中の秘密値はサニタイズされる
+      expect(result.stdout).toContain("[SIGNET:REDACTED]");
     });
 
     test("credential is not visible after command completes", () => {
@@ -46,11 +47,13 @@ describe("vault/manager", () => {
       expect(result.exitCode).not.toBe(0);
     });
 
-    test("captures stdout from command", () => {
+    test("captures stdout from command with redaction", () => {
       const result = injectForCommand("MY_VAR", "hello", "echo $MY_VAR world");
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout.trim()).toBe("hello world");
+      // "hello" は4文字なのでサニタイズ対象
+      expect(result.stdout).toContain("[SIGNET:REDACTED]");
+      expect(result.stdout).toContain("world");
     });
 
     test("does not leak credential to parent process env", () => {
@@ -72,7 +75,9 @@ describe("vault/manager", () => {
       );
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout.trim()).toBe(specialValue);
+      // 特殊文字を含む秘密値もサニタイズされる
+      expect(result.stdout).not.toContain(specialValue);
+      expect(result.stdout).toContain("[SIGNET:REDACTED]");
     });
 
     test("captures stderr from failing command", () => {
@@ -80,6 +85,56 @@ describe("vault/manager", () => {
 
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain("error-output");
+    });
+
+    test("redacts credential value from stdout", () => {
+      const secret = "super-secret-token-xyz";
+      const result = injectForCommand(
+        "LEAK_TEST",
+        secret,
+        "echo super-secret-token-xyz",
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).not.toContain(secret);
+      expect(result.stdout).toContain("[SIGNET:REDACTED]");
+    });
+
+    test("redacts credential value from stderr", () => {
+      const secret = "my-api-key-12345";
+      const result = injectForCommand(
+        "LEAK_TEST2",
+        secret,
+        "echo my-api-key-12345 >&2 && false",
+      );
+
+      expect(result.stderr).not.toContain(secret);
+      expect(result.stderr).toContain("[SIGNET:REDACTED]");
+    });
+
+    test("redacts multiple occurrences of credential in output", () => {
+      const secret = "repeated-secret";
+      const result = injectForCommand(
+        "MULTI_LEAK",
+        secret,
+        "echo repeated-secret-repeated-secret",
+      );
+
+      expect(result.stdout).not.toContain(secret);
+      // 2箇所がマスクされる
+      const count = (result.stdout.match(/\[SIGNET:REDACTED\]/g) || []).length;
+      expect(count).toBe(2);
+    });
+
+    test("does not redact short secrets (< 4 chars) to avoid false positives", () => {
+      const result = injectForCommand(
+        "SHORT_SEC",
+        "abc",
+        "echo abc",
+      );
+
+      // 短い秘密はマスクしない（false positive防止）
+      expect(result.stdout.trim()).toBe("abc");
     });
   });
 

@@ -35,4 +35,20 @@ describe("templates", () => {
     expect(config.scope.credentials?.pypi_token).toBeDefined();
     expect(config.scope.network?.allow).toContain("pypi.org");
   });
+
+  for (const name of ["general", "node", "python"]) {
+    test(`${name}.yml blocks data exfiltration commands`, () => {
+      const content = readFileSync(join(templatesDir, `${name}.yml`), "utf-8");
+      const config = parsePolicy(content);
+      const denyList = config.scope.shell?.deny ?? [];
+
+      // データ送信コマンドがdenyリストに含まれていること
+      expect(denyList).toContain("curl *");
+      expect(denyList).toContain("wget *");
+      expect(denyList).toContain("nc *");
+      // 環境変数表示コマンドがdenyリストに含まれていること
+      expect(denyList).toContain("env");
+      expect(denyList).toContain("printenv *");
+    });
+  }
 });
