@@ -196,3 +196,67 @@ export function matchCredential(
   if (rule.require_approval) return "ask";
   return "allow";
 }
+
+// ─── DetailedMatch: マッチしたルール情報を返す拡張版 ───
+
+export interface MatchDetail {
+  result: MatchResult;
+  matchedRule?: string;   // マッチしたパターン文字列
+  matchedIn?: string;     // マッチしたルールカテゴリ (e.g. "deny", "allow", "blocked")
+}
+
+export function matchShellDetailed(scope: Scope["shell"], command: string): MatchDetail {
+  if (!scope) return { result: "no_match" };
+  const denyMatch = scope.deny?.find((p) => commandMatch(p, command));
+  if (denyMatch) return { result: "deny", matchedRule: denyMatch, matchedIn: "deny" };
+  const askMatch = scope.ask?.find((p) => commandMatch(p, command));
+  if (askMatch) return { result: "ask", matchedRule: askMatch, matchedIn: "ask" };
+  const allowMatch = scope.allow?.find((p) => commandMatch(p, command));
+  if (allowMatch) return { result: "allow", matchedRule: allowMatch, matchedIn: "allow" };
+  return { result: "no_match" };
+}
+
+export function matchFilesystemDetailed(scope: Scope["filesystem"], path: string, action: "read" | "write"): MatchDetail {
+  if (!scope) return { result: "no_match" };
+  const blockedMatch = scope.blocked?.find((p) => globMatch(p, path));
+  if (blockedMatch) return { result: "deny", matchedRule: blockedMatch, matchedIn: "blocked" };
+  if (action === "write") {
+    const writableMatch = scope.writable?.find((p) => globMatch(p, path));
+    if (writableMatch) return { result: "allow", matchedRule: writableMatch, matchedIn: "writable" };
+    if (scope.writable && scope.writable.length > 0) return { result: "deny", matchedIn: "writable (no match)" };
+  }
+  if (action === "read") {
+    const readableMatch = scope.readable?.find((p) => globMatch(p, path));
+    if (readableMatch) return { result: "allow", matchedRule: readableMatch, matchedIn: "readable" };
+    const writableMatch = scope.writable?.find((p) => globMatch(p, path));
+    if (writableMatch) return { result: "allow", matchedRule: writableMatch, matchedIn: "writable" };
+  }
+  return { result: "no_match" };
+}
+
+export function matchNetworkDetailed(scope: Scope["network"], domain: string): MatchDetail {
+  if (!scope) return { result: "no_match" };
+  if (scope.deny?.some((p) => domainMatch(p, domain))) {
+    if (scope.deny.some((p) => p === "*") && scope.allow?.some((p) => domainMatch(p, domain))) {
+      const allowMatch = scope.allow!.find((p) => domainMatch(p, domain))!;
+      return { result: "allow", matchedRule: allowMatch, matchedIn: "allow (exception)" };
+    }
+    const denyMatch = scope.deny.find((p) => domainMatch(p, domain))!;
+    return { result: "deny", matchedRule: denyMatch, matchedIn: "deny" };
+  }
+  const allowMatch = scope.allow?.find((p) => domainMatch(p, domain));
+  if (allowMatch) return { result: "allow", matchedRule: allowMatch, matchedIn: "allow" };
+  return { result: "no_match" };
+}
+
+export function matchCredentialDetailed(scope: Scope["credentials"], credName: string, action?: string): MatchDetail {
+  if (!scope) return { result: "no_match" };
+  const rule = scope[credName];
+  if (!rule) return { result: "deny", matchedIn: "not defined" };
+  if (action && rule.allowed_actions) {
+    const actionMatch = rule.allowed_actions.find((p) => globMatch(p, action));
+    if (!actionMatch) return { result: "deny", matchedIn: "allowed_actions (no match)" };
+  }
+  if (rule.require_approval) return { result: "ask", matchedRule: credName, matchedIn: "require_approval" };
+  return { result: "allow", matchedRule: credName, matchedIn: "credentials" };
+}

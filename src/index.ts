@@ -8,7 +8,11 @@ import { homedir } from "node:os";
 import { generateKeyPair, saveKeyPair, loadKeyPair, encodeBase64, decodeBase64 } from "./crypto/keys";
 import { createDelegation } from "./crypto/delegation";
 import { parsePolicyFile } from "./policy/parser";
-import { matchShell, matchFilesystem, matchNetwork, matchCredential, type MatchResult } from "./policy/matcher";
+import {
+  matchShell, matchFilesystem, matchNetwork, matchCredential, type MatchResult,
+  matchShellDetailed, matchFilesystemDetailed, matchNetworkDetailed, matchCredentialDetailed,
+  type MatchDetail,
+} from "./policy/matcher";
 import { AuditLogger } from "./audit/logger";
 import { activate, deactivate, getVaultState } from "./vault/manager";
 import { generateClaudeCodeSettings } from "./adapters/claude-code";
@@ -51,13 +55,17 @@ program
     if (existsSync(configPath)) {
       console.log("signet.yml already exists");
     } else {
+      const validTemplates = ["general", "node", "python"];
+      if (!validTemplates.includes(opts.template)) {
+        console.error(`Error: Unknown template "${opts.template}". Available: ${validTemplates.join(", ")}`);
+        process.exit(1);
+      }
       const templatePath = join(__dirname, "..", "templates", `${opts.template}.yml`);
       if (existsSync(templatePath)) {
         const template = readFileSync(templatePath, "utf-8");
         writeFileSync(configPath, template);
         console.log(`Created signet.yml (template: ${opts.template})`);
       } else {
-        // テンプレートが見つからない場合はデフォルト生成
         writeFileSync(configPath, generateDefaultConfig());
         console.log("Created signet.yml (default)");
       }
@@ -86,7 +94,21 @@ program
         process.exit(1);
       }
 
-      const state = activate({ projectDir: process.cwd() });
+      // ポリシーからクレデンシャル環境変数を抽出
+      const config = parsePolicyFile(configPath);
+      const credentialEnvVars: string[] = [];
+      if (config.scope.credentials) {
+        for (const [, rule] of Object.entries(config.scope.credentials)) {
+          if (rule.source?.startsWith("env:")) {
+            credentialEnvVars.push(rule.source.slice(4));
+          }
+        }
+      }
+
+      const state = activate({
+        projectDir: process.cwd(),
+        credentialEnvVars: credentialEnvVars.length > 0 ? credentialEnvVars : undefined,
+      });
       console.log("Vault activated");
       if (state.evacuatedFiles.length > 0) {
         console.log("  Evacuated files:", state.evacuatedFiles.join(", "));
@@ -94,6 +116,10 @@ program
       if (state.evacuatedVars.length > 0) {
         console.log("  Evacuated env vars:", state.evacuatedVars.join(", "));
       }
+      if (state.evacuatedFiles.length === 0 && state.evacuatedVars.length === 0) {
+        console.log("  No .env files or credential env vars found to protect.");
+      }
+      console.log("\nNext: signet status");
     } catch (err: unknown) {
       console.error("Error:", err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -111,6 +137,7 @@ program
       if (state.evacuatedFiles.length > 0) {
         console.log("  Restored files:", state.evacuatedFiles.join(", "));
       }
+      console.log("\nCredentials restored. Run 'signet activate' to re-protect.");
     } catch (err: unknown) {
       console.error("Error:", err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -247,28 +274,28 @@ program
     const scope = config.scope;
     const type = opts.type || "shell";
 
-    let result: MatchResult;
+    let detail: MatchDetail;
     let label: string;
 
     switch (type) {
       case "shell":
-        result = matchShell(scope.shell, target);
+        detail = matchShellDetailed(scope.shell, target);
         label = `shell: "${target}"`;
         break;
       case "fs_read":
-        result = matchFilesystem(scope.filesystem, target, "read");
+        detail = matchFilesystemDetailed(scope.filesystem, target, "read");
         label = `fs_read: ${target}`;
         break;
       case "fs_write":
-        result = matchFilesystem(scope.filesystem, target, "write");
+        detail = matchFilesystemDetailed(scope.filesystem, target, "write");
         label = `fs_write: ${target}`;
         break;
       case "network":
-        result = matchNetwork(scope.network, target);
+        detail = matchNetworkDetailed(scope.network, target);
         label = `network: ${target}`;
         break;
       case "credential":
-        result = matchCredential(scope.credentials, target, opts.purpose);
+        detail = matchCredentialDetailed(scope.credentials, target, opts.purpose);
         label = `credential: ${target}${opts.purpose ? ` (${opts.purpose})` : ""}`;
         break;
       default:
@@ -276,8 +303,19 @@ program
         process.exit(1);
     }
 
-    const icon = result === "allow" ? "\u2705" : result === "deny" ? "\u274C" : result === "ask" ? "\u2753" : "\u2796";
-    console.log(`${icon} ${label} → ${result}`);
+    // no_match → engine treats as deny (deny-by-default)
+    const effectiveResult = detail.result === "no_match" ? "deny" : detail.result;
+    const icon = effectiveResult === "allow" ? "\u2705" : effectiveResult === "deny" ? "\u274C" : "\u2753";
+
+    let output = `${icon} ${label} → ${effectiveResult}`;
+    if (detail.matchedRule) {
+      output += `  (matched: "${detail.matchedRule}" in ${detail.matchedIn})`;
+    } else if (detail.result === "no_match") {
+      output += "  (no matching rule — denied by default)";
+    } else if (detail.matchedIn) {
+      output += `  (${detail.matchedIn})`;
+    }
+    console.log(output);
   });
 
 // ─── signet delegate ───
@@ -367,6 +405,33 @@ keysCmd
         console.log(`  ${file.replace(".pub", "")}: ${pubKey}`);
       }
     }
+  });
+
+keysCmd
+  .command("generate <name>")
+  .description("Generate a new agent keypair (Example: signet keys generate claude-code)")
+  .action((name: string) => {
+    const agentsDir = join(SIGNET_DIR, "agents");
+    if (!existsSync(agentsDir)) {
+      mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
+    }
+
+    const keyPath = join(agentsDir, `${name}.key`);
+    const pubPath = join(agentsDir, `${name}.pub`);
+    if (existsSync(keyPath) || existsSync(pubPath)) {
+      console.error(`Error: Agent "${name}" already exists. Remove files in ${agentsDir} first to regenerate.`);
+      process.exit(1);
+    }
+
+    const kp = generateKeyPair();
+    saveKeyPair(kp, keyPath);
+    const pubB64 = encodeBase64(kp.publicKey);
+    writeFileSync(pubPath, pubB64 + "\n", { mode: 0o644 });
+
+    console.log(`Generated agent keypair: ${name}`);
+    console.log(`  Private key: ${keyPath}`);
+    console.log(`  Public key:  ${pubB64}`);
+    console.log(`\nNext: signet delegate ${pubB64}`);
   });
 
 keysCmd

@@ -5,6 +5,10 @@ import {
   matchNetwork,
   matchShell,
   matchCredential,
+  matchShellDetailed,
+  matchFilesystemDetailed,
+  matchNetworkDetailed,
+  matchCredentialDetailed,
 } from "../src/policy/matcher";
 
 describe("policy/matcher", () => {
@@ -234,6 +238,97 @@ describe("policy/matcher", () => {
         },
       };
       expect(matchCredential(emptyCreds, "restricted_key", "any action")).toBe("deny");
+    });
+  });
+
+  // ─── Detailed matchers ───
+
+  describe("matchShellDetailed", () => {
+    const shell = {
+      deny: ["rm -rf *"],
+      ask: ["git push *"],
+      allow: ["npm test"],
+    };
+
+    test("returns matched rule and category", () => {
+      const d = matchShellDetailed(shell, "rm -rf /");
+      expect(d.result).toBe("deny");
+      expect(d.matchedRule).toBe("rm -rf *");
+      expect(d.matchedIn).toBe("deny");
+    });
+
+    test("returns ask with matched rule", () => {
+      const d = matchShellDetailed(shell, "git push origin main");
+      expect(d.result).toBe("ask");
+      expect(d.matchedRule).toBe("git push *");
+      expect(d.matchedIn).toBe("ask");
+    });
+
+    test("returns no_match with no matchedRule", () => {
+      const d = matchShellDetailed(shell, "echo hello");
+      expect(d.result).toBe("no_match");
+      expect(d.matchedRule).toBeUndefined();
+    });
+  });
+
+  describe("matchFilesystemDetailed", () => {
+    const fs = {
+      writable: ["./src/**"],
+      readable: ["./**"],
+      blocked: ["./.env"],
+    };
+
+    test("returns blocked rule detail", () => {
+      const d = matchFilesystemDetailed(fs, "./.env", "write");
+      expect(d.result).toBe("deny");
+      expect(d.matchedRule).toBe("./.env");
+      expect(d.matchedIn).toBe("blocked");
+    });
+
+    test("returns writable match detail", () => {
+      const d = matchFilesystemDetailed(fs, "./src/foo.ts", "write");
+      expect(d.result).toBe("allow");
+      expect(d.matchedRule).toBe("./src/**");
+      expect(d.matchedIn).toBe("writable");
+    });
+
+    test("returns deny for write outside writable", () => {
+      const d = matchFilesystemDetailed(fs, "./dist/out.js", "write");
+      expect(d.result).toBe("deny");
+      expect(d.matchedIn).toContain("writable");
+    });
+  });
+
+  describe("matchNetworkDetailed", () => {
+    test("returns allow exception detail", () => {
+      const net = { allow: ["github.com"], deny: ["*"] };
+      const d = matchNetworkDetailed(net, "github.com");
+      expect(d.result).toBe("allow");
+      expect(d.matchedRule).toBe("github.com");
+      expect(d.matchedIn).toContain("exception");
+    });
+
+    test("returns deny detail", () => {
+      const net = { allow: ["github.com"], deny: ["*"] };
+      const d = matchNetworkDetailed(net, "evil.com");
+      expect(d.result).toBe("deny");
+      expect(d.matchedRule).toBe("*");
+    });
+  });
+
+  describe("matchCredentialDetailed", () => {
+    test("returns require_approval detail", () => {
+      const creds = { API_KEY: { require_approval: true } };
+      const d = matchCredentialDetailed(creds, "API_KEY");
+      expect(d.result).toBe("ask");
+      expect(d.matchedIn).toBe("require_approval");
+    });
+
+    test("returns not defined for unknown credential", () => {
+      const creds = { API_KEY: {} };
+      const d = matchCredentialDetailed(creds, "UNKNOWN");
+      expect(d.result).toBe("deny");
+      expect(d.matchedIn).toBe("not defined");
     });
   });
 });

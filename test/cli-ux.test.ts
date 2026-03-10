@@ -204,6 +204,41 @@ scope:
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("Unknown type");
   });
+
+  test("no_match shows as deny (deny-by-default)", () => {
+    setupPolicy();
+    // "echo hello" is not in any shell rule → no_match → should show as deny
+    const { stdout, exitCode } = runSignet('check "echo hello"');
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("❌");
+    expect(stdout).toContain("deny");
+    expect(stdout).toContain("denied by default");
+  });
+
+  test("shows matched rule detail", () => {
+    setupPolicy();
+    const { stdout, exitCode } = runSignet('check "npm test"');
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("✅");
+    expect(stdout).toContain('matched: "npm test"');
+    expect(stdout).toContain("allow");
+  });
+
+  test("shows matched deny rule detail", () => {
+    setupPolicy();
+    const { stdout, exitCode } = runSignet('check "rm -rf /" ');
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("❌");
+    expect(stdout).toContain('matched: "rm -rf *"');
+  });
+
+  test("shows blocked detail for filesystem", () => {
+    setupPolicy();
+    const { stdout, exitCode } = runSignet('check "./.env" --type fs_write');
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("❌");
+    expect(stdout).toContain("blocked");
+  });
 });
 
 // ─── signet status ───
@@ -267,5 +302,46 @@ describe("signet keys register", () => {
     mkdirSync(SIGNET_HOME, { recursive: true, mode: 0o700 });
     const { stderr, exitCode } = runSignet('keys register bad-agent "not-valid-base64!!!"');
     expect(exitCode).not.toBe(0);
+  });
+});
+
+// ─── signet keys generate ───
+
+describe("signet keys generate", () => {
+  test("generates agent keypair", () => {
+    mkdirSync(SIGNET_HOME, { recursive: true, mode: 0o700 });
+
+    const { stdout, exitCode } = runSignet("keys generate test-agent");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Generated agent keypair: test-agent");
+    expect(stdout).toContain("Private key:");
+    expect(stdout).toContain("Public key:");
+    expect(stdout).toContain("signet delegate");
+
+    // Verify both files exist
+    expect(existsSync(join(SIGNET_HOME, "agents", "test-agent.key"))).toBe(true);
+    expect(existsSync(join(SIGNET_HOME, "agents", "test-agent.pub"))).toBe(true);
+  });
+
+  test("rejects duplicate name", () => {
+    mkdirSync(SIGNET_HOME, { recursive: true, mode: 0o700 });
+    const agentsDir = join(SIGNET_HOME, "agents");
+    mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(agentsDir, "existing.pub"), "dummy\n");
+
+    const { stderr, exitCode } = runSignet("keys generate existing");
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("already exists");
+  });
+});
+
+// ─── signet init template validation ───
+
+describe("signet init template validation", () => {
+  test("rejects invalid template name", () => {
+    const { stderr, exitCode } = runSignet("init --template django");
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain('Unknown template "django"');
+    expect(stderr).toContain("general, node, python");
   });
 });
