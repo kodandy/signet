@@ -597,6 +597,166 @@ program
     logger.close();
   });
 
+// ─── signet scan ───
+program
+  .command("scan")
+  .description("Scan project for exposed credentials and security risks")
+  .option("--fix", "Automatically add found files to signet.yml blocked list")
+  .action((opts) => {
+    const projectDir = process.cwd();
+
+    // 既知のクレデンシャルファイルパターン
+    const credentialPatterns = [
+      { glob: ".env", desc: "Environment variables" },
+      { glob: ".env.local", desc: "Local environment variables" },
+      { glob: ".env.production", desc: "Production environment variables" },
+      { glob: ".env.development", desc: "Development environment variables" },
+      { glob: ".env.*", desc: "Environment variable variants" },
+    ];
+
+    const sensitivePatterns = [
+      { glob: "**/*.pem", desc: "PEM certificates/keys" },
+      { glob: "**/*.key", desc: "Private keys" },
+      { glob: "**/*.p12", desc: "PKCS#12 keystores" },
+      { glob: "**/credentials.json", desc: "Service account credentials" },
+      { glob: "**/service-account*.json", desc: "Service account files" },
+      { glob: "**/.htpasswd", desc: "HTTP password files" },
+      { glob: "**/id_rsa", desc: "SSH private keys" },
+      { glob: "**/id_ed25519", desc: "SSH private keys (Ed25519)" },
+    ];
+
+    const dangerousDirs = [
+      { path: ".aws", desc: "AWS credentials" },
+      { path: ".ssh", desc: "SSH keys" },
+      { path: ".gnupg", desc: "GPG keys" },
+      { path: ".docker", desc: "Docker credentials" },
+    ];
+
+    const found: { file: string; desc: string; severity: "high" | "medium" }[] = [];
+
+    // .envファイルチェック
+    for (const p of credentialPatterns) {
+      // .env.* のワイルドカード展開
+      if (p.glob.includes("*")) {
+        try {
+          const dir = readdirSync(projectDir) as string[];
+          for (const f of dir) {
+            if (f.startsWith(".env.") && f !== ".env.example" && f !== ".env.sample" && f !== ".env.template") {
+              if (existsSync(join(projectDir, f))) {
+                found.push({ file: `./${f}`, desc: p.desc, severity: "high" });
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      } else {
+        const fullPath = join(projectDir, p.glob);
+        if (existsSync(fullPath)) {
+          found.push({ file: `./${p.glob}`, desc: p.desc, severity: "high" });
+        }
+      }
+    }
+
+    // ホームディレクトリの危険なディレクトリチェック
+    for (const d of dangerousDirs) {
+      const fullPath = join(homedir(), d.path);
+      if (existsSync(fullPath)) {
+        found.push({ file: `~/${d.path}`, desc: d.desc, severity: "medium" });
+      }
+    }
+
+    // プロジェクト内のセンシティブファイルチェック（1階層のみ高速スキャン）
+    for (const p of sensitivePatterns) {
+      if (!p.glob.startsWith("**/")) continue;
+      const fileName = p.glob.replace("**/", "");
+      if (fileName.includes("*")) continue; // ワイルドカードはスキップ
+      const fullPath = join(projectDir, fileName);
+      if (existsSync(fullPath)) {
+        found.push({ file: `./${fileName}`, desc: p.desc, severity: "high" });
+      }
+    }
+
+    console.log("\nsignet scan\n");
+
+    if (found.length === 0) {
+      console.log("  No exposed credentials found. Your project looks clean.");
+    } else {
+      const high = found.filter(f => f.severity === "high");
+      const medium = found.filter(f => f.severity === "medium");
+
+      if (high.length > 0) {
+        console.log("  \u{1F6A8} Exposed in project:");
+        for (const f of high) {
+          console.log(`    ${f.file} — ${f.desc}`);
+        }
+      }
+
+      if (medium.length > 0) {
+        console.log("  \u26A0\uFE0F  Accessible from home directory:");
+        for (const f of medium) {
+          console.log(`    ${f.file} — ${f.desc}`);
+        }
+      }
+
+      // ポリシーとの照合
+      const configPath = resolve("signet.yml");
+      if (existsSync(configPath)) {
+        try {
+          const config = parsePolicyFile(configPath);
+          const blocked = config.scope.filesystem?.blocked ?? [];
+          const unprotected = high.filter(f =>
+            !blocked.some(b => f.file === b || f.file.replace("./", "") === b.replace("./", "")),
+          );
+          if (unprotected.length > 0) {
+            console.log("\n  \u274C Not in signet.yml blocked list:");
+            for (const f of unprotected) {
+              console.log(`    ${f.file}`);
+            }
+            if (opts.fix) {
+              // signet.yml に blocked パスを追加
+              let yml = readFileSync(configPath, "utf-8");
+              for (const f of unprotected) {
+                const pattern = f.file.startsWith("./") ? f.file : `./${f.file}`;
+                if (!yml.includes(pattern)) {
+                  // blocked: セクションの末尾に追加
+                  yml = yml.replace(
+                    /(blocked:\n(?:\s+- .*\n)*)/,
+                    `$1      - "${pattern}"\n`,
+                  );
+                }
+              }
+              writeFileSync(configPath, yml);
+              console.log("\n  \u2705 Added to signet.yml blocked list. Re-run 'signet adapt claude-code' to update.");
+            } else {
+              console.log("\n  Hint: Run 'signet scan --fix' to add them automatically.");
+            }
+          } else if (high.length > 0) {
+            console.log("\n  \u2705 All found files are in signet.yml blocked list.");
+          }
+        } catch { /* ignore parse errors */ }
+      }
+
+      // vault状態チェック
+      const vaultState = getVaultState();
+      if (vaultState?.active) {
+        const evacuated = new Set(vaultState.evacuatedFiles);
+        const notEvacuated = high.filter(f => {
+          const abs = resolve(projectDir, f.file);
+          return !evacuated.has(abs);
+        });
+        if (notEvacuated.length > 0) {
+          console.log(`\n  \u26A0\uFE0F  Vault active but these files are not evacuated:`);
+          for (const f of notEvacuated) {
+            console.log(`    ${f.file}`);
+          }
+        }
+      } else if (high.length > 0) {
+        console.log("\n  Hint: Run 'signet activate' to evacuate .env files to encrypted vault.");
+      }
+    }
+
+    console.log();
+  });
+
 // ─── signet adapt ───
 const adaptCmd = program
   .command("adapt")

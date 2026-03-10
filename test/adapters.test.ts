@@ -129,6 +129,61 @@ describe("adapters/claude-code", () => {
     expect(denyCount).toBe(1);
   });
 
+  test("generates sandbox config with filesystem and network", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    // sandbox enabled
+    expect(settings.sandbox.enabled).toBe(true);
+    // filesystem writable → sandbox allowWrite
+    expect(settings.sandbox.filesystem.allowWrite).toContain("./src/**");
+    // filesystem blocked → sandbox denyRead + denyWrite
+    expect(settings.sandbox.filesystem.denyRead).toContain("./.env");
+    expect(settings.sandbox.filesystem.denyWrite).toContain("./.env");
+    // home dir sensitive paths added
+    expect(settings.sandbox.filesystem.denyRead).toContain("~/.aws/**");
+    expect(settings.sandbox.filesystem.denyRead).toContain("~/.ssh/**");
+    // network deny:* + allow → allowedDomains
+    expect(settings.sandbox.network.allowedDomains).toContain("github.com");
+    expect(settings.sandbox.network.allowedDomains).toContain("registry.npmjs.org");
+  });
+
+  test("generates Read deny rules for blocked files", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.permissions.deny).toContain("Read(./.env)");
+    expect(settings.permissions.deny).toContain("Read(~/.ssh/**)");
+  });
+
+  test("denies curl/wget when network is deny-all", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.permissions.deny).toContain("Bash(curl *)");
+    expect(settings.permissions.deny).toContain("Bash(wget *)");
+  });
+
+  test("no network sandbox when no deny-all rule", () => {
+    const scopeNoNetDeny: Scope = {
+      filesystem: { writable: ["./src/**"], readable: ["./**"] },
+      network: { allow: ["github.com"] },
+    };
+    generateClaudeCodeSettings(scopeNoNetDeny, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.sandbox.enabled).toBe(true);
+    expect(settings.sandbox.network).toBeUndefined();
+  });
+
   test("throws when existing settings.json contains malformed JSON", () => {
     const claudeDir = join(testDir, ".claude");
     mkdirSync(claudeDir, { recursive: true });
