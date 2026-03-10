@@ -5,10 +5,10 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
-import { generateKeyPair, saveKeyPair, loadKeyPair, encodeBase64 } from "./crypto/keys";
+import { generateKeyPair, saveKeyPair, loadKeyPair, encodeBase64, decodeBase64 } from "./crypto/keys";
 import { createDelegation } from "./crypto/delegation";
 import { parsePolicyFile } from "./policy/parser";
-import { matchShell, matchFilesystem, matchNetwork, matchCredential } from "./policy/matcher";
+import { matchShell, matchFilesystem, matchNetwork, matchCredential, type MatchResult } from "./policy/matcher";
 import { AuditLogger } from "./audit/logger";
 import { activate, deactivate, getVaultState } from "./vault/manager";
 import { generateClaudeCodeSettings } from "./adapters/claude-code";
@@ -26,7 +26,7 @@ program
 // ─── signet init ───
 program
   .command("init")
-  .description("Initialize signet: generate keys and create signet.yml")
+  .description("Initialize signet: generate keys and create signet.yml (Example: signet init --template node --claude-code)")
   .option("--template <name>", "Use a preset template (node, python, general)", "general")
   .option("--claude-code", "Generate Claude Code adapter settings")
   .action((opts) => {
@@ -120,27 +120,74 @@ program
 // ─── signet status ───
 program
   .command("status")
-  .description("Show current signet status")
+  .description("Show current signet status and setup checklist")
   .action(() => {
     const userKeyPath = join(SIGNET_DIR, "user.key");
     const configPath = resolve("signet.yml");
     const vaultState = getVaultState();
 
-    console.log("signet status:");
-    console.log("  User key:", existsSync(userKeyPath) ? "configured" : "not found");
-    console.log("  Policy:", existsSync(configPath) ? "signet.yml found" : "not found");
-    console.log("  Vault:", vaultState?.active ? "active" : "inactive");
+    const hasKey = existsSync(userKeyPath);
+    const hasPolicy = existsSync(configPath);
+    const isVaultActive = vaultState?.active ?? false;
+    const agentsDir = join(SIGNET_DIR, "agents");
+    const agentFiles = existsSync(agentsDir)
+      ? (readdirSync(agentsDir) as string[]).filter((f: string) => f.endsWith(".pub"))
+      : [];
 
-    if (existsSync(userKeyPath)) {
+    console.log("\nsignet status\n");
+
+    // Checklist
+    console.log(`  ${hasKey ? "\u2705" : "\u274C"} User keypair     ${hasKey ? "configured" : "run: signet init"}`);
+    console.log(`  ${hasPolicy ? "\u2705" : "\u274C"} Policy file      ${hasPolicy ? "signet.yml" : "run: signet init"}`);
+    console.log(`  ${isVaultActive ? "\u2705" : "\u26A0\uFE0F"} Vault            ${isVaultActive ? "active" : "inactive — run: signet activate"}`);
+    console.log(`  ${agentFiles.length > 0 ? "\u2705" : "\u2796"} Agent keys       ${agentFiles.length > 0 ? `${agentFiles.length} registered` : "none — run: signet delegate <pubkey>"}`);
+
+    if (hasKey) {
       const kp = loadKeyPair(userKeyPath);
-      console.log("  Public key:", encodeBase64(kp.publicKey));
+      console.log(`\n  Public key: ${encodeBase64(kp.publicKey)}`);
     }
+
+    if (isVaultActive && vaultState) {
+      if (vaultState.evacuatedFiles.length > 0) {
+        console.log(`  Protected: ${vaultState.evacuatedFiles.join(", ")}`);
+      }
+    }
+
+    if (hasPolicy) {
+      try {
+        const config = parsePolicyFile(configPath);
+        const s = config.scope;
+        const counts = [];
+        if (s.shell) {
+          const n = (s.shell.allow?.length ?? 0) + (s.shell.deny?.length ?? 0) + (s.shell.ask?.length ?? 0);
+          counts.push(`${n} shell`);
+        }
+        if (s.filesystem) {
+          const n = (s.filesystem.writable?.length ?? 0) + (s.filesystem.readable?.length ?? 0) + (s.filesystem.blocked?.length ?? 0);
+          counts.push(`${n} filesystem`);
+        }
+        if (s.network) {
+          const n = (s.network.allow?.length ?? 0) + (s.network.deny?.length ?? 0);
+          counts.push(`${n} network`);
+        }
+        if (s.credentials) {
+          counts.push(`${Object.keys(s.credentials).length} credential`);
+        }
+        if (counts.length > 0) {
+          console.log(`  Policy rules: ${counts.join(", ")}`);
+        }
+      } catch {
+        console.log("  Policy: error parsing signet.yml");
+      }
+    }
+
+    console.log();
   });
 
 // ─── signet log ───
 program
   .command("log")
-  .description("View audit log")
+  .description("View audit log (Examples: signet log -n 20, signet log --verify, signet log --export json)")
   .option("--verify", "Verify chain hash integrity")
   .option("--export <format>", "Export log (json or csv)")
   .option("-n, --limit <count>", "Number of entries to show", "10")
@@ -185,22 +232,112 @@ program
 
 // ─── signet check ───
 program
-  .command("check <command>")
-  .description("Dry-run policy check for a command")
-  .action((command: string) => {
+  .command("check <target>")
+  .description("Dry-run policy check (Examples: signet check \"npm test\", signet check --type fs_write ./src/index.ts)")
+  .option("-t, --type <type>", "Resource type: shell, fs_read, fs_write, network, credential (default: shell)")
+  .option("--purpose <purpose>", "Purpose string for credential checks")
+  .action((target: string, opts) => {
     const configPath = resolve("signet.yml");
     if (!existsSync(configPath)) {
-      console.error("Error: signet.yml not found.");
+      console.error("Error: signet.yml not found. Run 'signet init' first.");
       process.exit(1);
     }
 
     const config = parsePolicyFile(configPath);
     const scope = config.scope;
+    const type = opts.type || "shell";
 
-    const shellResult = matchShell(scope.shell, command);
-    const icon = shellResult === "allow" ? "\u2705" : shellResult === "deny" ? "\u274C" : shellResult === "ask" ? "\u2753" : "\u2796";
+    let result: MatchResult;
+    let label: string;
 
-    console.log(`${icon} shell: "${command}" → ${shellResult}`);
+    switch (type) {
+      case "shell":
+        result = matchShell(scope.shell, target);
+        label = `shell: "${target}"`;
+        break;
+      case "fs_read":
+        result = matchFilesystem(scope.filesystem, target, "read");
+        label = `fs_read: ${target}`;
+        break;
+      case "fs_write":
+        result = matchFilesystem(scope.filesystem, target, "write");
+        label = `fs_write: ${target}`;
+        break;
+      case "network":
+        result = matchNetwork(scope.network, target);
+        label = `network: ${target}`;
+        break;
+      case "credential":
+        result = matchCredential(scope.credentials, target, opts.purpose);
+        label = `credential: ${target}${opts.purpose ? ` (${opts.purpose})` : ""}`;
+        break;
+      default:
+        console.error(`Error: Unknown type "${type}". Use: shell, fs_read, fs_write, network, credential`);
+        process.exit(1);
+    }
+
+    const icon = result === "allow" ? "\u2705" : result === "deny" ? "\u274C" : result === "ask" ? "\u2753" : "\u2796";
+    console.log(`${icon} ${label} → ${result}`);
+  });
+
+// ─── signet delegate ───
+program
+  .command("delegate <agent-pubkey>")
+  .description("Issue a delegation token to an agent (Example: signet delegate <base64-pubkey> --expires 2h)")
+  .option("--expires <duration>", "Token lifetime: e.g. 1h, 4h, 24h (default: 4h)", "4h")
+  .option("--max-uses <count>", "Maximum number of uses")
+  .option("--context-hash <hash>", "Bind token to a specific context hash")
+  .option("-o, --output <file>", "Write token to file instead of stdout")
+  .action((agentPubKey: string, opts) => {
+    const userKeyPath = join(SIGNET_DIR, "user.key");
+    if (!existsSync(userKeyPath)) {
+      console.error("Error: User keypair not found. Run 'signet init' first.");
+      process.exit(1);
+    }
+
+    const configPath = resolve("signet.yml");
+    if (!existsSync(configPath)) {
+      console.error("Error: signet.yml not found. Run 'signet init' first.");
+      process.exit(1);
+    }
+
+    // Parse duration string → expires_at ISO string
+    const durationMs = parseDuration(opts.expires);
+    if (durationMs === null) {
+      console.error(`Error: Invalid duration "${opts.expires}". Use format like: 1h, 4h, 30m, 24h`);
+      process.exit(1);
+    }
+
+    const userKey = loadKeyPair(userKeyPath);
+    const config = parsePolicyFile(configPath);
+
+    try {
+      const token = createDelegation(userKey, agentPubKey, config.scope, {
+        expires_at: new Date(Date.now() + durationMs).toISOString(),
+        max_uses: opts.maxUses ? parseInt(opts.maxUses) : undefined,
+        context_hash: opts.contextHash,
+      });
+
+      const tokenJson = JSON.stringify(token, null, 2);
+
+      if (opts.output) {
+        writeFileSync(opts.output, tokenJson, { mode: 0o600 });
+        console.log(`Token written to ${opts.output}`);
+      } else {
+        console.log(tokenJson);
+      }
+
+      // Summary to stderr so it doesn't pollute JSON output when piped
+      const expiresAt = new Date(token.expires_at);
+      console.error(`\nDelegation issued:`);
+      console.error(`  Subject: ${agentPubKey.substring(0, 16)}...`);
+      console.error(`  Expires: ${expiresAt.toLocaleString()}`);
+      if (token.max_uses) console.error(`  Max uses: ${token.max_uses}`);
+      if (token.context_hash) console.error(`  Context: ${token.context_hash.substring(0, 16)}...`);
+    } catch (err: unknown) {
+      console.error("Error:", err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
   });
 
 // ─── signet keys ───
@@ -232,10 +369,43 @@ keysCmd
     }
   });
 
+keysCmd
+  .command("register <name> <pubkey>")
+  .description("Register an agent's public key (Example: signet keys register claude-code <base64-pubkey>)")
+  .action((name: string, pubkey: string) => {
+    // Validate base64 pubkey
+    try {
+      const decoded = decodeBase64(pubkey);
+      if (decoded.length !== 32) {
+        console.error(`Error: Invalid public key — expected 32 bytes, got ${decoded.length}`);
+        process.exit(1);
+      }
+    } catch {
+      console.error("Error: Invalid public key — not valid base64");
+      process.exit(1);
+    }
+
+    const agentsDir = join(SIGNET_DIR, "agents");
+    if (!existsSync(agentsDir)) {
+      mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
+    }
+
+    const keyPath = join(agentsDir, `${name}.pub`);
+    if (existsSync(keyPath)) {
+      console.error(`Error: Agent "${name}" already registered. Remove ${keyPath} first to re-register.`);
+      process.exit(1);
+    }
+
+    writeFileSync(keyPath, pubkey + "\n", { mode: 0o644 });
+    console.log(`Registered agent key: ${name}`);
+    console.log(`  Public key: ${pubkey.substring(0, 24)}...`);
+    console.log(`\nNext: signet delegate ${pubkey}`);
+  });
+
 // ─── signet revoke ───
 program
   .command("revoke <token-signature>")
-  .description("Revoke a delegation token by its signature (base64 or hash)")
+  .description("Revoke a delegation token (Example: signet revoke <base64-signature> --reason 'compromised')")
   .option("--reason <reason>", "Reason for revocation")
   .action((tokenSig: string, opts) => {
     const logger = new AuditLogger();
@@ -324,6 +494,19 @@ adaptCmd
 
 // ─── Parse and run ───
 program.parse();
+
+function parseDuration(str: string): number | null {
+  const match = str.match(/^(\d+)(m|h|d)$/);
+  if (!match) return null;
+  const value = parseInt(match[1]);
+  const unit = match[2];
+  switch (unit) {
+    case "m": return value * 60 * 1000;
+    case "h": return value * 60 * 60 * 1000;
+    case "d": return value * 24 * 60 * 60 * 1000;
+    default: return null;
+  }
+}
 
 function generateDefaultConfig(): string {
   return `version: 1
