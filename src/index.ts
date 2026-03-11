@@ -17,6 +17,7 @@ import { AuditLogger } from "./audit/logger";
 import { activate, deactivate, getVaultState } from "./vault/manager";
 import { generateClaudeCodeSettings } from "./adapters/claude-code";
 import { generateWrappers, generatePathSetup } from "./adapters/generic";
+import { generateCursorSettings } from "./adapters/cursor";
 
 const SIGNET_DIR = join(homedir(), ".signet");
 
@@ -812,6 +813,24 @@ adaptCmd
     }
   });
 
+adaptCmd
+  .command("cursor")
+  .description("Generate Cursor settings from signet.yml")
+  .option("--project-dir <dir>", "Project directory", process.cwd())
+  .action((opts) => {
+    const configPath = resolve("signet.yml");
+    if (!existsSync(configPath)) {
+      console.error("Error: signet.yml not found. Run 'signet init' first.");
+      process.exit(1);
+    }
+
+    const config = parsePolicyFile(configPath);
+    generateCursorSettings(config.scope, opts.projectDir);
+    console.log("Cursor adapter configured:");
+    console.log("  .cursor/rules/signet-policy.mdc — policy rules generated");
+    console.log("  .cursorignore — blocked paths added");
+  });
+
 // ─── signet demo ───
 program
   .command("demo")
@@ -991,9 +1010,17 @@ program
   });
 
 // ─── Parse and run ───
-program.parse();
+const isDirectRun =
+  process.argv[1] &&
+  (process.argv[1].endsWith("/index.ts") ||
+    process.argv[1].endsWith("/index.js") ||
+    process.argv[1].endsWith("/signet"));
 
-function parseDuration(str: string): number | null {
+if (isDirectRun) {
+  program.parse();
+}
+
+export function parseDuration(str: string): number | null {
   const match = str.match(/^(\d+)(m|h|d)$/);
   if (!match) return null;
   const value = parseInt(match[1]);
@@ -1006,13 +1033,13 @@ function parseDuration(str: string): number | null {
   }
 }
 
-interface DetectResult {
+export interface DetectResult {
   type: string;
   yml: string;
   notes: string[];
 }
 
-function detectProject(dir: string): DetectResult {
+export function detectProject(dir: string): DetectResult {
   const notes: string[] = [];
   const has = (f: string) => existsSync(join(dir, f));
 
@@ -1186,7 +1213,7 @@ ${shellAsk.map(c => `      - "${c}"`).join("\n")}
   return { type, yml, notes };
 }
 
-function generateDefaultConfig(): string {
+export function generateDefaultConfig(): string {
   return `version: 1
 defaults:
   expires: "4h"
