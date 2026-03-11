@@ -80,6 +80,14 @@ export class AuditLogger {
         reason TEXT
       )
     `);
+
+    // リプレイ防止: 使用済みnonce記録
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS used_nonces (
+        nonce TEXT PRIMARY KEY,
+        used_at TEXT NOT NULL
+      )
+    `);
   }
 
   log(request: ActionRequest, decision: ActionDecision): AuditEntry {
@@ -281,6 +289,35 @@ export class AuditLogger {
     return this.db.prepare(
       "SELECT token_hash, revoked_at, reason FROM revoked_tokens ORDER BY revoked_at DESC",
     ).all() as Array<{ token_hash: string; revoked_at: string; reason: string | null }>;
+  }
+
+  /**
+   * nonceが使用済みかチェック
+   */
+  isNonceUsed(nonce: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM used_nonces WHERE nonce = ?",
+    ).get(nonce);
+    return row !== undefined;
+  }
+
+  /**
+   * nonceを使用済みとして記録
+   */
+  recordNonce(nonce: string): void {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO used_nonces (nonce, used_at) VALUES (?, ?)",
+    ).run(nonce, new Date().toISOString());
+  }
+
+  /**
+   * 古いnonce記録をクリーンアップ（指定秒数より古いものを削除）
+   */
+  cleanupNonces(maxAgeSeconds: number = 600): void {
+    const cutoff = new Date(Date.now() - maxAgeSeconds * 1000).toISOString();
+    this.db.prepare(
+      "DELETE FROM used_nonces WHERE used_at < ?",
+    ).run(cutoff);
   }
 
   close(): void {

@@ -266,18 +266,30 @@ describe("engine/evaluator", () => {
       expect(decision.request_hash).toMatch(/^[a-f0-9]{64}$/);
     });
 
-    test("signActionRequest produces consistent signature for same input", () => {
+    test("signActionRequest produces consistent signature for same input with same nonce", () => {
       const fixedTimestamp = "2025-01-01T00:00:00.000Z";
+      const fixedNonce = "fixed-nonce-for-test";
       const req1 = signActionRequest(
-        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp },
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp, nonce: fixedNonce },
         agentKey.secretKey,
       );
       const req2 = signActionRequest(
-        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp },
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp, nonce: fixedNonce },
         agentKey.secretKey,
       );
 
       expect(req1.signature).toBe(req2.signature);
+    });
+
+    test("signActionRequest auto-generates nonce when not provided", () => {
+      const fixedTimestamp = "2025-01-01T00:00:00.000Z";
+      const req = signActionRequest(
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp },
+        agentKey.secretKey,
+      );
+
+      expect(req.nonce).toBeDefined();
+      expect(req.nonce!.length).toBe(32); // 16 bytes hex = 32 chars
     });
 
     test("verifyDecision returns false for invalid base64 pubkey", async () => {
@@ -477,6 +489,101 @@ describe("engine/evaluator", () => {
 
       // No context_hash in opts → skip check → allowed
       expect(decision.allowed).toBe(true);
+    });
+  });
+
+  describe("replay protection", () => {
+    const testDir = join(tmpdir(), `signet-engine-replay-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("rejects request with stale timestamp", async () => {
+      const staleRequest = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date(Date.now() - 600_000).toISOString(), // 10分前
+        },
+        agentKey.secretKey,
+      );
+
+      const decision = await evaluate(staleRequest, delegation, testScope, userKey);
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain("timestamp too far");
+    });
+
+    test("rejects request with future timestamp", async () => {
+      const futureRequest = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date(Date.now() + 600_000).toISOString(), // 10分後
+        },
+        agentKey.secretKey,
+      );
+
+      const decision = await evaluate(futureRequest, delegation, testScope, userKey);
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain("timestamp too far");
+    });
+
+    test("rejects duplicate nonce (replay attack)", async () => {
+      logger = new AuditLogger(join(testDir, "replay.db"));
+      const fixedNonce = "unique-nonce-12345";
+
+      const req1 = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+          nonce: fixedNonce,
+        },
+        agentKey.secretKey,
+      );
+
+      // First request succeeds
+      const d1 = await evaluate(req1, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d1.allowed).toBe(true);
+
+      // Replay same request (same nonce) — must be rejected
+      const req2 = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+          nonce: fixedNonce,
+        },
+        agentKey.secretKey,
+      );
+
+      const d2 = await evaluate(req2, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d2.allowed).toBe(false);
+      expect(d2.reason).toContain("Duplicate nonce");
+    });
+
+    test("allows requests with different nonces", async () => {
+      logger = new AuditLogger(join(testDir, "replay2.db"));
+
+      const req1 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d1 = await evaluate(req1, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d1.allowed).toBe(true);
+
+      const req2 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d2 = await evaluate(req2, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d2.allowed).toBe(true);
+
+      // Different auto-generated nonces
+      expect(req1.nonce).not.toBe(req2.nonce);
     });
   });
 });

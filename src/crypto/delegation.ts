@@ -1,5 +1,16 @@
+import { timingSafeEqual } from "node:crypto";
 import { type KeyPair, sign, verify, encodeBase64, decodeBase64 } from "./keys";
 import type { Scope } from "../policy/scope";
+
+/**
+ * タイミングセーフな文字列比較（サイドチャネル攻撃防止）
+ */
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  const bufA = Buffer.from(a, "utf-8");
+  const bufB = Buffer.from(b, "utf-8");
+  return timingSafeEqual(bufA, bufB);
+}
 
 export type { Scope };
 
@@ -96,8 +107,8 @@ export function verifyDelegation(
   token: DelegationToken,
   userPubKey: string,
 ): boolean {
-  // issuerとuserPubKeyの一致を検証
-  if (token.issuer !== userPubKey) {
+  // issuerとuserPubKeyの一致を検証（タイミングセーフ）
+  if (!safeCompare(token.issuer, userPubKey)) {
     return false;
   }
 

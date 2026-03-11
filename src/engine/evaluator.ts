@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { type KeyPair, sign, verify, encodeBase64, decodeBase64 } from "../crypto/keys";
 import { type DelegationToken, verifyDelegation } from "../crypto/delegation";
 import type { Scope } from "../policy/scope";
@@ -17,8 +17,12 @@ export interface ActionRequest {
   target: string;         // path, domain, command, credential name
   purpose?: string;       // LLM生成の説明
   timestamp: string;      // ISO 8601
+  nonce?: string;         // ランダムな一意値（リプレイ攻撃防止）
   signature: string;      // agent key で署名 (base64)
 }
+
+// リプレイ防止: タイムスタンプの最大許容ズレ（秒）
+const MAX_TIMESTAMP_DRIFT_SECONDS = 300; // 5分
 
 export interface ActionDecision {
   request_hash: string;
@@ -92,16 +96,18 @@ function makeDecision(
 
 /**
  * ActionRequest署名を生成するヘルパー（エージェント側で使用）
+ * nonceが未設定の場合、自動的にランダムnonceを付与する
  */
 export function signActionRequest(
   request: Omit<ActionRequest, "signature">,
   agentSecretKey: Uint8Array,
 ): ActionRequest {
+  const withNonce = request.nonce ? request : { ...request, nonce: randomBytes(16).toString("hex") };
   const payload = new TextEncoder().encode(
-    JSON.stringify(request, Object.keys(request).sort()),
+    JSON.stringify(withNonce, Object.keys(withNonce).sort()),
   );
   const sig = sign(payload, agentSecretKey);
-  return { ...request, signature: encodeBase64(sig) };
+  return { ...withNonce, signature: encodeBase64(sig) };
 }
 
 /**
@@ -124,6 +130,24 @@ export async function evaluate(
 ): Promise<ActionDecision> {
   const reqHash = hashRequest(request);
 
+  // 0. タイムスタンプ鮮度チェック（リプレイ攻撃防止）
+  const requestTime = new Date(request.timestamp).getTime();
+  const nowMs = Date.now();
+  if (isNaN(requestTime)) {
+    return makeDecision(reqHash, false, "Invalid request timestamp", "policy", userKey);
+  }
+  const driftSeconds = Math.abs(nowMs - requestTime) / 1000;
+  if (driftSeconds > MAX_TIMESTAMP_DRIFT_SECONDS) {
+    return makeDecision(reqHash, false, `Request timestamp too far from current time (${Math.round(driftSeconds)}s drift, max ${MAX_TIMESTAMP_DRIFT_SECONDS}s)`, "policy", userKey);
+  }
+
+  // 0.5 Nonce重複チェック（リプレイ攻撃防止）
+  if (request.nonce && opts?.auditLogger) {
+    if (opts.auditLogger.isNonceUsed(request.nonce)) {
+      return makeDecision(reqHash, false, "Duplicate nonce: possible replay attack", "policy", userKey);
+    }
+  }
+
   // 1. agent署名検証
   const agentPubKey = decodeBase64(request.agent_id);
   const payload = requestPayload(request);
@@ -133,8 +157,10 @@ export async function evaluate(
     return makeDecision(reqHash, false, "Invalid agent signature", "policy", userKey);
   }
 
-  // 2. DelegationToken検証 — agent_idがsubjectと一致するか
-  if (request.agent_id !== delegation.subject) {
+  // 2. DelegationToken検証 — agent_idがsubjectと一致するか（タイミングセーフ）
+  const agentIdBuf = Buffer.from(request.agent_id, "utf-8");
+  const subjectBuf = Buffer.from(delegation.subject, "utf-8");
+  if (agentIdBuf.length !== subjectBuf.length || !timingSafeEqual(agentIdBuf, subjectBuf)) {
     return makeDecision(reqHash, false, "Agent not authorized by delegation token", "policy", userKey);
   }
 
@@ -207,6 +233,11 @@ export async function evaluate(
       opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
     }
 
+    // Nonceを使用済みとして記録
+    if (request.nonce && opts?.auditLogger) {
+      opts.auditLogger.recordNonce(request.nonce);
+    }
+
     return makeDecision(reqHash, true, `Allowed by policy: ${request.action} on ${request.target}`, "policy", userKey);
   }
 
@@ -241,6 +272,11 @@ export async function evaluate(
             opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
           }
         }
+        // Nonceを使用済みとして記録
+        if (request.nonce && opts?.auditLogger) {
+          opts.auditLogger.recordNonce(request.nonce);
+        }
+
         return makeDecision(reqHash, true, `Approved by user: ${request.action} on ${request.target}`, "user", userKey);
       }
       return makeDecision(reqHash, false, `Rejected by user: ${request.action} on ${request.target}`, "user", userKey);

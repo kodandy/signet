@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 
 const DEFAULT_VAULT_DIR = join(homedir(), ".signet", "vault");
@@ -65,17 +65,13 @@ function decrypt(data: string, vaultKeyPath: string): string {
   const key = getVaultKey(vaultKeyPath);
   const parts = data.split(":");
 
-  // Support legacy CBC format (iv:ciphertext) for migration
+  // Legacy CBC format (iv:ciphertext) is no longer supported.
+  // CBC without authentication is vulnerable to padding oracle attacks.
   if (parts.length === 2) {
-    const [ivHex, encrypted] = parts;
-    const iv = Buffer.from(ivHex, "hex");
-    if (iv.length !== 16) {
-      throw new Error("Invalid encrypted data: legacy CBC IV must be 16 bytes");
-    }
-    const decipher = createDecipheriv("aes-256-cbc", key, iv);
-    let decrypted = decipher.update(encrypted, "hex", "utf-8");
-    decrypted += decipher.final("utf-8");
-    return decrypted;
+    throw new Error(
+      "Legacy AES-256-CBC format is no longer supported. " +
+      "Re-encrypt your vault data using 'signet vault deactivate && signet vault activate'.",
+    );
   }
 
   // GCM format: iv:authTag:ciphertext
@@ -134,7 +130,8 @@ export function activate(config: VaultConfig = {}): VaultState {
     mkdirSync(paths.vaultDir, { recursive: true, mode: 0o700 });
   }
 
-  // 1. .envファイルを暗号化して退避
+  // 1. .envファイルを暗号化して退避（まだ元ファイルは削除しない）
+  const filesToDelete: string[] = [];
   for (const envFile of envFiles) {
     const fullPath = resolve(projectDir, envFile);
     if (existsSync(fullPath)) {
@@ -144,31 +141,41 @@ export function activate(config: VaultConfig = {}): VaultState {
 
       writeFileSync(vaultPath, encrypt(content, paths.vaultKeyPath), { mode: 0o600 });
       writeFileSync(vaultPath + ".meta", JSON.stringify({ originalPath: fullPath }), { mode: 0o600 });
-      unlinkSync(fullPath);
       evacuatedFiles.push(fullPath);
+      filesToDelete.push(fullPath);
     }
   }
 
   // 2. 指定された環境変数を退避
+  const varsToDelete: string[] = [];
   if (config.credentialEnvVars) {
     for (const varName of config.credentialEnvVars) {
       if (process.env[varName] !== undefined) {
         const vaultPath = join(paths.vaultDir, `env_${varName}.enc`);
         writeFileSync(vaultPath, encrypt(process.env[varName]!, paths.vaultKeyPath), { mode: 0o600 });
-        delete process.env[varName];
         evacuatedVars.push(varName);
+        varsToDelete.push(varName);
       }
     }
   }
 
+  // 3. 状態ファイルを先に保存（クラッシュ時の復旧を保証）
   const state: VaultState = {
     active: true,
     evacuatedFiles,
     evacuatedVars,
     projectDir,
   };
-
   saveState(state, paths.statePath);
+
+  // 4. 状態が永続化されたことを確認してから元ファイルを削除
+  for (const fullPath of filesToDelete) {
+    unlinkSync(fullPath);
+  }
+  for (const varName of varsToDelete) {
+    delete process.env[varName];
+  }
+
   return state;
 }
 
@@ -275,10 +282,18 @@ export function injectForCommand(
   credValue: string,
   command: string,
 ): { stdout: string; stderr: string; exitCode: number } {
+  // Validate credName to prevent env var injection
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(credName)) {
+    throw new Error(`Invalid credential name: ${credName}`);
+  }
+
   const env = { ...process.env, [credName]: credValue };
 
   try {
-    const stdout = execSync(command, {
+    // Use execFileSync with explicit shell to avoid implicit shell invocation.
+    // The command runs through /bin/sh -c so shell features (pipes, env expansion) work,
+    // but the shell path and arguments are explicit rather than platform-dependent.
+    const stdout = execFileSync("/bin/sh", ["-c", command], {
       env,
       encoding: "utf-8",
       timeout: COMMAND_TIMEOUT_MS,
