@@ -43,11 +43,27 @@ export interface EvaluateOptions {
 }
 
 /**
+ * 再帰的にキーをソートした安定なJSON文字列を生成（正規化）
+ */
+function canonicalize(obj: unknown): string {
+  return JSON.stringify(obj, (_, value) => {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(value).sort()) {
+        sorted[k] = (value as Record<string, unknown>)[k];
+      }
+      return sorted;
+    }
+    return value;
+  });
+}
+
+/**
  * ActionRequestのsignature以外のフィールドからハッシュ生成
  */
 function hashRequest(request: ActionRequest): string {
   const { signature: _, ...payload } = request;
-  const json = JSON.stringify(payload, Object.keys(payload).sort());
+  const json = canonicalize(payload);
   return createHash("sha256").update(json).digest("hex");
 }
 
@@ -56,16 +72,14 @@ function hashRequest(request: ActionRequest): string {
  */
 function requestPayload(request: ActionRequest): Uint8Array {
   const { signature: _, ...payload } = request;
-  const json = JSON.stringify(payload, Object.keys(payload).sort());
-  return new TextEncoder().encode(json);
+  return new TextEncoder().encode(canonicalize(payload));
 }
 
 /**
  * ActionDecisionの署名対象ペイロードを生成
  */
 function decisionPayload(decision: Omit<ActionDecision, "signature">): Uint8Array {
-  const json = JSON.stringify(decision, Object.keys(decision).sort());
-  return new TextEncoder().encode(json);
+  return new TextEncoder().encode(canonicalize(decision));
 }
 
 function signDecision(
@@ -103,9 +117,7 @@ export function signActionRequest(
   agentSecretKey: Uint8Array,
 ): ActionRequest {
   const withNonce = request.nonce ? request : { ...request, nonce: randomBytes(16).toString("hex") };
-  const payload = new TextEncoder().encode(
-    JSON.stringify(withNonce, Object.keys(withNonce).sort()),
-  );
+  const payload = new TextEncoder().encode(canonicalize(withNonce));
   const sig = sign(payload, agentSecretKey);
   return { ...withNonce, signature: encodeBase64(sig) };
 }

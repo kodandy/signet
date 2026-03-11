@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ActionRequest } from "../engine/evaluator";
 import type { ActionDecision } from "../engine/evaluator";
@@ -31,12 +31,25 @@ function csvEscape(value: string): string {
 const SIGNET_DIR = join(homedir(), ".signet");
 const DEFAULT_DB_PATH = join(SIGNET_DIR, "audit.db");
 
+function canonicalizeForHash(obj: unknown): string {
+  return JSON.stringify(obj, (_, value) => {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(value).sort()) {
+        sorted[k] = (value as Record<string, unknown>)[k];
+      }
+      return sorted;
+    }
+    return value;
+  });
+}
+
 function computeChainHash(
   previousHash: string,
   request: ActionRequest,
   decision: ActionDecision,
 ): string {
-  const payload = JSON.stringify({ previousHash, request, decision });
+  const payload = canonicalizeForHash({ previousHash, request, decision });
   return createHash("sha256").update(payload).digest("hex");
 }
 
@@ -49,7 +62,12 @@ export class AuditLogger {
       mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
 
+    const isNew = !existsSync(dbPath);
     this.db = new Database(dbPath);
+    // 新規作成時はファイルパーミッションを制限（所有者のみ読み書き）
+    if (isNew) {
+      try { chmodSync(dbPath, 0o600); } catch { /* Windows等でchmodが効かない場合は無視 */ }
+    }
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
 

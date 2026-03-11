@@ -28,7 +28,12 @@ export function verify(
   signature: Uint8Array,
   publicKey: Uint8Array,
 ): boolean {
-  return nacl.sign.detached.verify(message, signature, publicKey);
+  try {
+    return nacl.sign.detached.verify(message, signature, publicKey);
+  } catch {
+    // tweetnacl throws on malformed inputs (wrong signature size, etc.)
+    return false;
+  }
 }
 
 export function encodeBase64(bytes: Uint8Array): string {

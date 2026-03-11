@@ -20,10 +20,12 @@ function globToRegex(pattern: string): RegExp {
 
     if (c === "*" && pattern[i + 1] === "*") {
       // ** は任意のパス（/を含む）にマッチ
+      // 連続する ** を1つに折りたたむ（ReDoS防止）
+      while (i < pattern.length - 1 && pattern[i] === "*" && pattern[i + 1] === "*") {
+        i += 2;
+        if (pattern[i] === "/") i++;
+      }
       result += ".*";
-      i += 2;
-      // 後続の / をスキップ
-      if (pattern[i] === "/") i++;
     } else if (c === "*") {
       // * は / を除く任意の文字列にマッチ
       result += "[^/]*";
@@ -154,8 +156,9 @@ function commandGlobToRegex(pattern: string): RegExp {
 
     if (c === "*") {
       // コマンドパターンの * は全文字にマッチ
+      // 連続する * を1つの .* に折りたたむ（ReDoS防止）
+      while (i < pattern.length && pattern[i] === "*") i++;
       result += ".*";
-      i++;
     } else if (c === "?") {
       result += ".";
       i++;
