@@ -3,12 +3,34 @@
   "version": "0.1.0",
   "description": "Cryptographic authorization delegation layer for local AI agents",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
-    "signet": "src/index.ts"
+    "signet": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "templates"
+  ],
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
     "test": "vitest run"
+  },
+  "keywords": [
+    "ai-agent",
+    "authorization",
+    "delegation",
+    "ed25519",
+    "cryptography",
+    "security",
+    "claude-code",
+    "credential-isolation",
+    "audit-trail"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/signet.git"
   },
   "license": "MIT",
   "dependencies": {

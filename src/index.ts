@@ -802,6 +802,184 @@ adaptCmd
     }
   });
 
+// ─── signet demo ───
+program
+  .command("demo")
+  .description("Interactive walkthrough of signet's core concepts (no setup required)")
+  .action(async () => {
+    const { generateKeyPair: genKP, encodeBase64: enc, sign: signBytes } = await import("./crypto/keys");
+    const { createDelegation: createDeleg, verifyDelegation: verifyDeleg } = await import("./crypto/delegation");
+    const { signActionRequest, evaluate: evalReq, verifyDecision: verifyDec } = await import("./engine/evaluator");
+    const { matchShellDetailed, matchFilesystemDetailed } = await import("./policy/matcher");
+
+    const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+    const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
+    const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+    const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
+    const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
+    const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
+
+    const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+    const step = async (label: string) => {
+      console.log();
+      console.log(bold(`── ${label} ──`));
+      await wait(500);
+    };
+
+    console.log();
+    console.log(bold("signet demo"));
+    console.log(dim("Simulated agent session — no setup required"));
+    console.log(dim("─────────────────────────────────────────────"));
+
+    // Step 1: Key Generation
+    await step("Step 1: Key Generation");
+    const userKey = genKP();
+    const agentKey = genKP();
+    console.log(`  User  keypair: ${cyan(enc(userKey.publicKey).substring(0, 32))}...`);
+    console.log(`  Agent keypair: ${cyan(enc(agentKey.publicKey).substring(0, 32))}...`);
+    console.log(dim("  Both are Ed25519 keypairs (tweetnacl). Private keys never leave the machine."));
+
+    // Step 2: Policy
+    await step("Step 2: Policy (signet.yml)");
+    const scope: import("./policy/scope").Scope = {
+      filesystem: {
+        writable: ["./src/**", "./test/**"],
+        readable: ["./**"],
+        blocked: ["./.env", "~/.ssh/**", "~/.aws/**"],
+      },
+      network: {
+        allow: ["github.com", "registry.npmjs.org"],
+        deny: ["*"],
+      },
+      shell: {
+        deny: ["rm -rf *", "sudo *"],
+        ask: ["git push *", "npm publish *"],
+        allow: ["npm test", "npm run *"],
+      },
+    };
+    console.log(`  filesystem: ${green("writable")} ./src/** ./test/**  ${red("blocked")} .env ~/.ssh/**`);
+    console.log(`  network:    ${green("allow")} github.com npmjs.org  ${red("deny")} *`);
+    console.log(`  shell:      ${green("allow")} npm test  ${yellow("ask")} git push  ${red("deny")} rm -rf, sudo`);
+
+    // Step 3: Delegation Token
+    await step("Step 3: Delegation Token");
+    const agentPub = enc(agentKey.publicKey);
+    const token = createDeleg(userKey, agentPub, scope, {
+      expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+      max_uses: 50,
+    });
+    const verified = verifyDeleg(token, enc(userKey.publicKey));
+    console.log(`  Issuer:  ${dim(token.issuer.substring(0, 24) + "...")}`);
+    console.log(`  Subject: ${dim(token.subject.substring(0, 24) + "...")}`);
+    console.log(`  Expires: ${token.expires_at}`);
+    console.log(`  Max uses: ${token.max_uses}`);
+    console.log(`  Signature verified: ${verified ? green("true") : red("false")}`);
+    console.log(dim("  User signs the scope + constraints. Agent cannot modify the token."));
+
+    // Step 4: Simulated Requests
+    await step("Step 4: Agent Requests → Policy Evaluation");
+    console.log();
+
+    const scenarios: Array<{
+      action: string;
+      target: string;
+      desc: string;
+    }> = [
+      { action: "fs_write", target: "./src/index.ts", desc: "Agent writes to source file" },
+      { action: "fs_read", target: "./.env", desc: "Agent tries to read .env" },
+      { action: "shell", target: "npm test", desc: "Agent runs npm test" },
+      { action: "shell", target: "git push origin main", desc: "Agent tries git push" },
+      { action: "shell", target: "rm -rf /", desc: "Agent tries rm -rf" },
+      { action: "net_connect", target: "github.com", desc: "Agent connects to GitHub" },
+      { action: "net_connect", target: "evil.com", desc: "Agent connects to unknown host" },
+    ];
+
+    const auditEntries: Array<{ icon: string; action: string; target: string; result: string }> = [];
+
+    for (const s of scenarios) {
+      const req = signActionRequest(
+        {
+          agent_id: agentPub,
+          action: s.action,
+          target: s.target,
+          timestamp: new Date().toISOString(),
+        },
+        agentKey.secretKey,
+      );
+
+      const decision = await evalReq(req, token, scope, userKey, {
+        onAsk: async () => {
+          // デモでは自動承認
+          return true;
+        },
+      });
+
+      let icon: string;
+      let resultLabel: string;
+      if (decision.allowed) {
+        if (decision.decided_by === "user") {
+          icon = yellow("?→✓");
+          resultLabel = yellow("ask → approved");
+        } else {
+          icon = green("✓");
+          resultLabel = green("allow");
+        }
+      } else {
+        icon = red("✗");
+        resultLabel = red("deny");
+      }
+
+      console.log(`  ${icon}  ${s.desc}`);
+      console.log(dim(`     ${s.action}: "${s.target}" → ${decision.allowed ? "allowed" : "denied"} (${decision.decided_by})`));
+      console.log(dim(`     decision signed: ${decision.signature.substring(0, 24)}...`));
+
+      auditEntries.push({
+        icon: decision.allowed ? (decision.decided_by === "user" ? "?" : "✓") : "✗",
+        action: s.action,
+        target: s.target,
+        result: decision.allowed ? "allowed" : "denied",
+      });
+
+      await wait(300);
+    }
+
+    // Step 5: Audit Trail
+    await step("Step 5: Audit Trail");
+    console.log(dim("  Every request and decision is logged with chain hashing (SHA-256)."));
+    console.log(dim("  Each entry's hash includes the previous hash → tamper-evident chain."));
+    console.log();
+    let prevHash = "0".repeat(64);
+    for (let i = 0; i < auditEntries.length; i++) {
+      const e = auditEntries[i];
+      const hash = createHash("sha256")
+        .update(prevHash + e.action + e.target + e.result)
+        .digest("hex");
+      const icon = e.result === "allowed" ? green("✓") : red("✗");
+      console.log(`  ${icon} ${e.action.padEnd(14)} ${e.target.padEnd(25)} → ${e.result}`);
+      console.log(dim(`    chain: ${hash.substring(0, 48)}...`));
+      prevHash = hash;
+    }
+    console.log();
+    console.log(dim("  If any entry is modified, the chain breaks. `signet log --verify` detects it."));
+
+    // Summary
+    await step("Summary");
+    console.log(`  ${green("✓")} Ed25519 keypairs generated for user and agent`);
+    console.log(`  ${green("✓")} Delegation token scopes what the agent can do`);
+    console.log(`  ${green("✓")} Every request is signed by the agent`);
+    console.log(`  ${green("✓")} Every decision is signed by the user's key`);
+    console.log(`  ${green("✓")} Chain-hashed audit trail is tamper-evident`);
+    console.log(`  ${green("✓")} Credential vault isolates .env files (AES-256-CBC)`);
+    console.log();
+    console.log(bold("  Get started:"));
+    console.log(`    ${cyan("npm install -g signet")}`);
+    console.log(`    ${cyan("signet init --template node")}`);
+    console.log(`    ${cyan("signet activate")}`);
+    console.log();
+    console.log(dim("  https://github.com/anthropics/signet"));
+    console.log();
+  });
+
 // ─── Parse and run ───
 program.parse();
 

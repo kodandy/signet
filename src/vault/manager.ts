@@ -158,7 +158,9 @@ export interface DeactivateOptions {
 export function deactivate(pathOverridesOrOpts?: Partial<VaultPaths> | DeactivateOptions): VaultState {
   // 後方互換: Partial<VaultPaths> も受け付ける
   const isOpts = pathOverridesOrOpts && ("force" in pathOverridesOrOpts || "paths" in pathOverridesOrOpts);
-  const opts: DeactivateOptions = isOpts ? pathOverridesOrOpts as DeactivateOptions : { paths: pathOverridesOrOpts };
+  const opts: DeactivateOptions = isOpts
+    ? (pathOverridesOrOpts as DeactivateOptions)
+    : { paths: pathOverridesOrOpts as Partial<VaultPaths> | undefined };
   const paths = resolvePaths(opts.paths);
   const force = opts.force ?? false;
 
