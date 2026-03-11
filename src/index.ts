@@ -1002,7 +1002,7 @@ program
     console.log(`  ${green("✓")} Every request is signed by the agent`);
     console.log(`  ${green("✓")} Every decision is signed by the user's key`);
     console.log(`  ${green("✓")} Chain-hashed audit trail is tamper-evident`);
-    console.log(`  ${green("✓")} Credential vault isolates .env files (AES-256-CBC)`);
+    console.log(`  ${green("✓")} Credential vault isolates .env files (AES-256-GCM)`);
     console.log();
     console.log(bold("  Get started:"));
     console.log(`    ${cyan("npm install -g signet")}`);
