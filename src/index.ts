@@ -30,8 +30,9 @@ program
 // ─── signet init ───
 program
   .command("init")
-  .description("Initialize signet: generate keys and create signet.yml (Example: signet init --template node --claude-code)")
-  .option("--template <name>", "Use a preset template (node, python, general)", "general")
+  .description("Initialize signet: generate keys and create signet.yml (Example: signet init --smart, signet init --template node)")
+  .option("--template <name>", "Use a preset template (node, python, general)")
+  .option("--smart", "Auto-detect project type and generate tailored policy")
   .option("--claude-code", "Generate Claude Code adapter settings")
   .action((opts) => {
     // 1. ~/.signet/ ディレクトリ作成
@@ -54,17 +55,26 @@ program
     const configPath = resolve("signet.yml");
     if (existsSync(configPath)) {
       console.log("signet.yml already exists");
+    } else if (opts.smart) {
+      // --smart: プロジェクト自動検出
+      const result = detectProject(process.cwd());
+      writeFileSync(configPath, result.yml);
+      console.log(`Created signet.yml (auto-detected: ${result.type})`);
+      for (const note of result.notes) {
+        console.log(`  ${note}`);
+      }
     } else {
+      const template = opts.template || "general";
       const validTemplates = ["general", "node", "python"];
-      if (!validTemplates.includes(opts.template)) {
-        console.error(`Error: Unknown template "${opts.template}". Available: ${validTemplates.join(", ")}`);
+      if (!validTemplates.includes(template)) {
+        console.error(`Error: Unknown template "${template}". Available: ${validTemplates.join(", ")}`);
         process.exit(1);
       }
-      const templatePath = join(__dirname, "..", "templates", `${opts.template}.yml`);
+      const templatePath = join(__dirname, "..", "templates", `${template}.yml`);
       if (existsSync(templatePath)) {
-        const template = readFileSync(templatePath, "utf-8");
-        writeFileSync(configPath, template);
-        console.log(`Created signet.yml (template: ${opts.template})`);
+        const tpl = readFileSync(templatePath, "utf-8");
+        writeFileSync(configPath, tpl);
+        console.log(`Created signet.yml (template: ${template})`);
       } else {
         writeFileSync(configPath, generateDefaultConfig());
         console.log("Created signet.yml (default)");
@@ -994,6 +1004,186 @@ function parseDuration(str: string): number | null {
     case "d": return value * 24 * 60 * 60 * 1000;
     default: return null;
   }
+}
+
+interface DetectResult {
+  type: string;
+  yml: string;
+  notes: string[];
+}
+
+function detectProject(dir: string): DetectResult {
+  const notes: string[] = [];
+  const has = (f: string) => existsSync(join(dir, f));
+
+  // プロジェクトタイプ検出
+  const isNode = has("package.json");
+  const isPython = has("pyproject.toml") || has("requirements.txt") || has("setup.py");
+  const type = isNode ? "node" : isPython ? "python" : "general";
+
+  // writable ディレクトリ検出
+  const writableDirs: string[] = [];
+  const commonSrcDirs = ["src", "lib", "app", "components", "pages", "routes", "api"];
+  const commonTestDirs = ["test", "tests", "__tests__", "spec"];
+  for (const d of commonSrcDirs) {
+    if (has(d)) writableDirs.push(`./${d}/**`);
+  }
+  for (const d of commonTestDirs) {
+    if (has(d)) writableDirs.push(`./${d}/**`);
+  }
+  if (has("docs")) writableDirs.push("./docs/**");
+  if (writableDirs.length === 0) {
+    writableDirs.push("./src/**", "./test/**");
+  }
+
+  // writable設定ファイル
+  if (isNode) {
+    writableDirs.push("./package.json", "./tsconfig.json");
+  }
+  if (isPython) {
+    if (has("pyproject.toml")) writableDirs.push("./pyproject.toml");
+    if (has("requirements.txt")) writableDirs.push("./requirements.txt");
+  }
+
+  // blocked ファイル検出
+  const blockedFiles = ["./.env", "./.env.*", "~/.ssh/**", "~/.aws/**"];
+  if (isNode && has(".npmrc")) {
+    blockedFiles.push("./.npmrc");
+    notes.push("Found .npmrc — added to blocked list");
+  }
+  if (isPython && has(".pypirc")) {
+    blockedFiles.push("./.pypirc");
+  }
+
+  // .env ファイル検出
+  const envFiles: string[] = [];
+  try {
+    for (const f of readdirSync(dir) as string[]) {
+      if (f.startsWith(".env") && f !== ".env.example" && f !== ".env.sample" && f !== ".env.template") {
+        if (has(f)) envFiles.push(f);
+      }
+    }
+  } catch { /* ignore */ }
+  if (envFiles.length > 0) {
+    notes.push(`Found ${envFiles.length} .env file(s) — will be protected by vault`);
+  }
+
+  // network 許可リスト
+  const networkAllow: string[] = ["github.com"];
+  if (isNode) {
+    networkAllow.push("registry.npmjs.org", "registry.yarnpkg.com");
+  }
+  if (isPython) {
+    networkAllow.push("pypi.org", "files.pythonhosted.org");
+  }
+
+  // git remote から追加ドメイン検出
+  try {
+    const gitConfig = readFileSync(join(dir, ".git", "config"), "utf-8");
+    const urlMatch = gitConfig.match(/url\s*=\s*(?:https?:\/\/|git@)([^/:]+)/);
+    if (urlMatch) {
+      const host = urlMatch[1];
+      if (!networkAllow.includes(host) && host !== "github.com") {
+        networkAllow.push(host);
+        notes.push(`Found git remote: ${host} — added to network allow`);
+      }
+    }
+  } catch { /* no git or no remote */ }
+
+  // shell ルール
+  const shellAllow: string[] = [];
+  const shellDeny = [
+    "rm -rf *", "sudo *", "chmod 777 *",
+    "curl *", "wget *", "nc *", "scp *", "rsync *",
+    "env", "printenv *",
+  ];
+  const shellAsk = ["git push *"];
+
+  if (isNode) {
+    shellAllow.push("npm test *", "npm run *", "npx *", "node *", "tsc *");
+    shellAsk.push("npm publish *");
+  }
+  if (isPython) {
+    shellAllow.push("python *", "pytest *", "pip install *", "poetry *", "ruff *", "mypy *");
+    shellAsk.push("twine upload *", "poetry publish *");
+  }
+  if (!isNode && !isPython) {
+    shellAllow.push("make *", "git status", "git diff *", "git log *");
+  }
+
+  // credential ルール
+  let credentialSection = "";
+  if (isNode) {
+    credentialSection = `
+  credentials:
+    github_token:
+      source: "env:GITHUB_TOKEN"
+      allowed_actions:
+        - "git push *"
+        - "gh pr create *"
+      max_uses: 20
+      require_approval: false
+    npm_token:
+      source: "env:NPM_TOKEN"
+      allowed_actions:
+        - "npm publish *"
+      max_uses: 3
+      require_approval: true
+`;
+  } else if (isPython) {
+    credentialSection = `
+  credentials:
+    github_token:
+      source: "env:GITHUB_TOKEN"
+      allowed_actions:
+        - "git push *"
+        - "gh pr create *"
+      max_uses: 20
+      require_approval: false
+    pypi_token:
+      source: "env:PYPI_TOKEN"
+      allowed_actions:
+        - "twine upload *"
+        - "poetry publish *"
+      max_uses: 3
+      require_approval: true
+`;
+  }
+
+  notes.push(`Detected: ${type} project`);
+  notes.push(`Writable dirs: ${writableDirs.filter(d => !d.includes(".")).length} found`);
+  notes.push(`Network allow: ${networkAllow.join(", ")}`);
+
+  // YAML生成
+  const yml = `version: 1
+defaults:
+  expires: "4h"
+
+scope:
+  filesystem:
+    writable:
+${writableDirs.map(d => `      - "${d}"`).join("\n")}
+    readable:
+      - "./**"
+    blocked:
+${blockedFiles.map(f => `      - "${f}"`).join("\n")}
+
+  network:
+    allow:
+${networkAllow.map(h => `      - "${h}"`).join("\n")}
+    deny:
+      - "*"
+${credentialSection}
+  shell:
+    allow:
+${shellAllow.map(c => `      - "${c}"`).join("\n")}
+    deny:
+${shellDeny.map(c => `      - "${c}"`).join("\n")}
+    ask:
+${shellAsk.map(c => `      - "${c}"`).join("\n")}
+`;
+
+  return { type, yml, notes };
 }
 
 function generateDefaultConfig(): string {

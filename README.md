@@ -50,8 +50,8 @@ npx signet demo
 # Install
 npm install -g signet
 
-# Initialize (generates keys + policy file)
-signet init
+# Initialize with auto-detection (reads package.json, .env, git remote, etc.)
+signet init --smart
 
 # Edit policy
 vim signet.yml
@@ -123,7 +123,8 @@ Templates available: `--template node`, `--template python`, `--template general
 
 ```
 Core
-  signet init [--template <name>] [--claude-code]   Setup keys + policy
+  signet init [--smart] [--template <name>] [--claude-code]
+                                                     Setup keys + policy
   signet activate                                    Enable vault + policies
   signet deactivate [--force]                        Restore credentials
   signet status                                      Show current state
