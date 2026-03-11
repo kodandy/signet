@@ -52,22 +52,47 @@ function getVaultKey(vaultKeyPath: string): Buffer {
 
 function encrypt(data: string, vaultKeyPath: string): string {
   const key = getVaultKey(vaultKeyPath);
-  const iv = randomBytes(16);
-  const cipher = createCipheriv("aes-256-cbc", key, iv);
+  const iv = randomBytes(12); // GCM uses 12-byte IV (96-bit nonce)
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
   let encrypted = cipher.update(data, "utf-8", "hex");
   encrypted += cipher.final("hex");
-  return iv.toString("hex") + ":" + encrypted;
+  const authTag = cipher.getAuthTag().toString("hex");
+  // Format: iv:authTag:ciphertext
+  return iv.toString("hex") + ":" + authTag + ":" + encrypted;
 }
 
 function decrypt(data: string, vaultKeyPath: string): string {
   const key = getVaultKey(vaultKeyPath);
   const parts = data.split(":");
-  if (parts.length !== 2) {
-    throw new Error("Invalid encrypted data format: expected 'iv:ciphertext'");
+
+  // Support legacy CBC format (iv:ciphertext) for migration
+  if (parts.length === 2) {
+    const [ivHex, encrypted] = parts;
+    const iv = Buffer.from(ivHex, "hex");
+    if (iv.length !== 16) {
+      throw new Error("Invalid encrypted data: legacy CBC IV must be 16 bytes");
+    }
+    const decipher = createDecipheriv("aes-256-cbc", key, iv);
+    let decrypted = decipher.update(encrypted, "hex", "utf-8");
+    decrypted += decipher.final("utf-8");
+    return decrypted;
   }
-  const [ivHex, encrypted] = parts;
+
+  // GCM format: iv:authTag:ciphertext
+  if (parts.length !== 3) {
+    throw new Error("Invalid encrypted data format: expected 'iv:authTag:ciphertext'");
+  }
+  const [ivHex, authTagHex, encrypted] = parts;
   const iv = Buffer.from(ivHex, "hex");
-  const decipher = createDecipheriv("aes-256-cbc", key, iv);
+  if (iv.length !== 12) {
+    throw new Error("Invalid encrypted data: GCM IV must be 12 bytes");
+  }
+  const authTag = Buffer.from(authTagHex, "hex");
+  if (authTag.length !== 16) {
+    throw new Error("Invalid encrypted data: auth tag must be 16 bytes");
+  }
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(authTag);
   let decrypted = decipher.update(encrypted, "hex", "utf-8");
   decrypted += decipher.final("utf-8");
   return decrypted;
@@ -259,11 +284,12 @@ export function injectForCommand(
       timeout: COMMAND_TIMEOUT_MS,
     });
     return { stdout: redactSecret(stdout, credValue), stderr: "", exitCode: 0 };
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const e = err as { stdout?: string; stderr?: string; message?: string; status?: number };
     return {
-      stdout: redactSecret(err.stdout ?? "", credValue),
-      stderr: redactSecret(err.stderr ?? err.message, credValue),
-      exitCode: err.status ?? 1,
+      stdout: redactSecret(e.stdout ?? "", credValue),
+      stderr: redactSecret(e.stderr ?? e.message ?? String(err), credValue),
+      exitCode: e.status ?? 1,
     };
   }
 }

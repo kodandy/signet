@@ -10,7 +10,7 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
-    "types": ["bun-types"]
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test/**/*.ts", "dist"]

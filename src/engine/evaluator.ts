@@ -138,8 +138,10 @@ export async function evaluate(
     return makeDecision(reqHash, false, "Agent not authorized by delegation token", "policy", userKey);
   }
 
-  // 3. DelegationToken署名検証
-  if (!verifyDelegation(delegation, delegation.issuer)) {
+  // 3. DelegationToken署名検証 — ユーザーの実際の公開鍵で検証
+  //    delegation.issuer ではなく userKey.publicKey を使う（自己署名攻撃防止）
+  const userPubKeyB64 = encodeBase64(userKey.publicKey);
+  if (!verifyDelegation(delegation, userPubKeyB64)) {
     return makeDecision(reqHash, false, "Invalid delegation token signature", "policy", userKey);
   }
 

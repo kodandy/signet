@@ -2,8 +2,12 @@
 import { Command } from "commander";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 import { generateKeyPair, saveKeyPair, loadKeyPair, encodeBase64, decodeBase64 } from "./crypto/keys";
 import { createDelegation } from "./crypto/delegation";
@@ -14,7 +18,7 @@ import {
   type MatchDetail,
 } from "./policy/matcher";
 import { AuditLogger } from "./audit/logger";
-import { activate, deactivate, getVaultState } from "./vault/manager";
+import { activate, deactivate, getVaultState, type VaultState } from "./vault/manager";
 import { generateClaudeCodeSettings } from "./adapters/claude-code";
 import { generateWrappers, generatePathSetup } from "./adapters/generic";
 import { generateCursorSettings } from "./adapters/cursor";
@@ -144,7 +148,7 @@ program
   .option("--force", "Force deactivate even if restoration fails (use when vault is stuck)")
   .action((opts) => {
     try {
-      const state = deactivate({ force: opts.force }) as any;
+      const state = deactivate({ force: opts.force }) as VaultState & { warnings?: string[] };
       if (opts.force && state.warnings?.length) {
         console.log("Vault force-deactivated with warnings:");
         for (const w of state.warnings) {
