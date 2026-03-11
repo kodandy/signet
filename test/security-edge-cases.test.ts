@@ -1,8 +1,7 @@
 import { describe, test, expect, afterEach } from "vitest";
-import { existsSync, rmSync, statSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, rmSync, statSync, writeFileSync, readFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
 
 import { generateKeyPair, encodeBase64, decodeBase64 } from "../src/crypto/keys";
 import { createDelegation, verifyDelegation, type DelegationToken } from "../src/crypto/delegation";
@@ -185,7 +184,6 @@ describe("security edge cases", () => {
       activate({ projectDir, paths });
 
       // Find the .enc file and tamper with it
-      const { readdirSync } = require("node:fs");
       const vaultFiles = readdirSync(paths.vaultDir);
       const encFile = vaultFiles.find((f: string) => f.endsWith(".enc") && !f.endsWith(".meta"));
 
@@ -351,7 +349,6 @@ describe("security edge cases", () => {
       activate({ projectDir, paths });
 
       // Replace encrypted file with legacy CBC format (iv:ciphertext)
-      const { readdirSync } = require("node:fs");
       const vaultFiles = readdirSync(paths.vaultDir);
       const encFile = vaultFiles.find((f: string) => f.endsWith(".enc") && !f.endsWith(".meta"));
 
@@ -365,6 +362,186 @@ describe("security edge cases", () => {
 
       // Clean up
       deactivate({ paths, force: true });
+    });
+  });
+
+  describe("expired delegation via evaluate()", () => {
+    test("rejects request with expired delegation token", async () => {
+      const expiredDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2020-01-01T00:00:00.000Z",
+      });
+
+      const request = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+        },
+        agentKey.secretKey,
+      );
+
+      const decision = await evaluate(request, expiredDelegation, testScope, userKey);
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain("expired");
+    });
+  });
+
+  describe("nonce replay attack", () => {
+    const testDir = join(tmpdir(), `signet-nonce-replay-${Date.now()}`);
+
+    afterEach(() => {
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("rejects duplicate nonce on second request", async () => {
+      const logger = new AuditLogger(join(testDir, "audit.db"));
+
+      const request = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+          nonce: "unique-nonce-12345",
+        },
+        agentKey.secretKey,
+      );
+
+      // First request should succeed
+      const decision1 = await evaluate(request, delegation, testScope, userKey, {
+        auditLogger: logger,
+      });
+      expect(decision1.allowed).toBe(true);
+
+      // Same request (same nonce) should be rejected as replay
+      // Need fresh timestamp to pass timestamp check, but keep same nonce
+      const replay = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+          nonce: "unique-nonce-12345",
+        },
+        agentKey.secretKey,
+      );
+
+      const decision2 = await evaluate(replay, delegation, testScope, userKey, {
+        auditLogger: logger,
+      });
+      expect(decision2.allowed).toBe(false);
+      expect(decision2.reason).toContain("replay");
+
+      logger.close();
+    });
+
+    test("allows different nonces for same action", async () => {
+      const logger = new AuditLogger(join(testDir, "audit.db"));
+
+      const request1 = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+        },
+        agentKey.secretKey,
+      );
+
+      const request2 = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+        },
+        agentKey.secretKey,
+      );
+
+      // Different auto-generated nonces
+      expect(request1.nonce).not.toBe(request2.nonce);
+
+      const decision1 = await evaluate(request1, delegation, testScope, userKey, { auditLogger: logger });
+      const decision2 = await evaluate(request2, delegation, testScope, userKey, { auditLogger: logger });
+
+      expect(decision1.allowed).toBe(true);
+      expect(decision2.allowed).toBe(true);
+
+      logger.close();
+    });
+  });
+
+  describe("max_uses exceeded", () => {
+    const testDir = join(tmpdir(), `signet-maxuses-${Date.now()}`);
+
+    afterEach(() => {
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("rejects request after delegation max_uses is reached", async () => {
+      const logger = new AuditLogger(join(testDir, "audit.db"));
+      const limitedDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 2,
+      });
+
+      // First two requests should succeed
+      for (let i = 0; i < 2; i++) {
+        const req = signActionRequest(
+          {
+            agent_id: agentPubKey,
+            action: "shell",
+            target: "npm test",
+            timestamp: new Date().toISOString(),
+          },
+          agentKey.secretKey,
+        );
+        const dec = await evaluate(req, limitedDelegation, testScope, userKey, { auditLogger: logger });
+        expect(dec.allowed).toBe(true);
+      }
+
+      // Third request should be rejected
+      const req3 = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+        },
+        agentKey.secretKey,
+      );
+      const dec3 = await evaluate(req3, limitedDelegation, testScope, userKey, { auditLogger: logger });
+      expect(dec3.allowed).toBe(false);
+      expect(dec3.reason).toContain("max_uses");
+
+      logger.close();
+    });
+
+    test("max_uses is not enforced without auditLogger", async () => {
+      const limitedDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 1,
+      });
+
+      // Without auditLogger, max_uses cannot be tracked
+      for (let i = 0; i < 3; i++) {
+        const req = signActionRequest(
+          {
+            agent_id: agentPubKey,
+            action: "shell",
+            target: "npm test",
+            timestamp: new Date().toISOString(),
+          },
+          agentKey.secretKey,
+        );
+        const dec = await evaluate(req, limitedDelegation, testScope, userKey);
+        expect(dec.allowed).toBe(true);
+      }
     });
   });
 

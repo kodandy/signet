@@ -9,6 +9,7 @@ import {
   matchCredential,
   type MatchResult,
 } from "../policy/matcher";
+import { canonicalize } from "../util/canonical";
 import type { AuditLogger } from "../audit/logger";
 
 export interface ActionRequest {
@@ -40,22 +41,6 @@ export interface EvaluateOptions {
   onAsk?: AskCallback;
   auditLogger?: AuditLogger;     // 使用回数カウント・トークン無効化チェック用
   context_hash?: string;          // リクエスト時のコンテキストハッシュ
-}
-
-/**
- * 再帰的にキーをソートした安定なJSON文字列を生成（正規化）
- */
-function canonicalize(obj: unknown): string {
-  return JSON.stringify(obj, (_, value) => {
-    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      const sorted: Record<string, unknown> = {};
-      for (const k of Object.keys(value).sort()) {
-        sorted[k] = (value as Record<string, unknown>)[k];
-      }
-      return sorted;
-    }
-    return value;
-  });
 }
 
 /**

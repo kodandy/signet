@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { type KeyPair, sign, verify, encodeBase64, decodeBase64 } from "./keys";
 import type { Scope } from "../policy/scope";
+import { canonicalize } from "../util/canonical";
 
 /**
  * タイミングセーフな文字列比較（サイドチャネル攻撃防止）
@@ -33,24 +34,6 @@ export interface DelegationOpts {
 }
 
 const DEFAULT_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4時間
-
-/**
- * 署名対象となるトークンペイロードを正規化JSON文字列として生成。
- * signatureフィールドを除いた全フィールドをキー順ソートで直列化。
- */
-function canonicalize(token: Omit<DelegationToken, "signature">): string {
-  // 全階層でキー順ソートした安定なJSON文字列を生成
-  return JSON.stringify(token, (_key, value) => {
-    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      const sorted: Record<string, unknown> = {};
-      for (const k of Object.keys(value).sort()) {
-        sorted[k] = value[k];
-      }
-      return sorted;
-    }
-    return value;
-  });
-}
 
 export function createDelegation(
   userKey: KeyPair,
