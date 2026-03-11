@@ -33,6 +33,9 @@
     "url": "https://github.com/anthropics/signet.git"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
     "commander": "^14.0.3",
