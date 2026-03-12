@@ -18,7 +18,7 @@ Individual developers using AI agents (Claude Code, OpenClaw, Cursor) locally ha
 
 ### One-liner
 
-Cryptographic authorization delegation for local AI agents. Ed25519 signatures, credential isolation, tamper-proof audit — in a single `npm install`.
+Cryptographic authorization delegation for local AI agents. Ed25519 signatures, credential isolation, tamper-proof audit — in a single `npm install ai-signet`.
 
 ## Market Timing (as of March 2026)
 
@@ -93,7 +93,7 @@ This GIF goes in: README hero section, HN post, Reddit posts, tweets
 Additionally, ship an interactive demo:
 
 ```bash
-npx signet demo
+npx ai-signet demo
 # Walks through a simulated agent session without requiring Claude Code
 # Shows: key generation → delegation → request → policy check → audit
 ```
@@ -120,7 +120,7 @@ Show HN: Signet – Cryptographic authorization for AI agents (no Docker, no Saa
 **What resonates on HN:**
 - Academic foundation (MIT paper: South et al. 2025)
 - Correct cryptography (Ed25519, chain hashing — not homebrew crypto)
-- Anti-enterprise positioning (npm install, not Docker + IdP + OAuth)
+- Anti-enterprise positioning (`npm install ai-signet`, not Docker + IdP + OAuth)
 - Small, auditable codebase (tweetnacl + better-sqlite3, minimal deps)
 
 **What to avoid:**
@@ -139,7 +139,7 @@ Body: Focus on the pain:
 - "Every time Claude Code needs to git push, it either has your token or it doesn't work"
 - "signet lets you issue signed, time-limited, scope-limited delegation tokens"
 - Demo GIF
-- `npm install -g signet && signet init`
+- `npm install -g ai-signet && signet init`
 ```
 
 **r/LocalLLaMA post:**
@@ -207,7 +207,7 @@ Each template includes:
 Target: **< 30 seconds from install to working protection**.
 
 ```bash
-npm install -g signet
+npm install -g ai-signet
 signet init --template node
 signet activate
 # Done. Agent is now running under signet.
@@ -295,7 +295,7 @@ Step 4: Propose integration
 - **Mitigation**: Track NIST closely. Plan OAuth 2.0 / OIDC token format as Phase 2 option. The core concepts (delegation, audit, credential isolation) are format-agnostic.
 
 ### Risk 4: Low adoption due to setup friction
-- **Mitigation**: Templates, `npx signet demo`, < 30 second setup. If it takes more than a minute, it's a bug.
+- **Mitigation**: Templates, `npx ai-signet demo`, < 30 second setup. If it takes more than a minute, it's a bug.
 
 ### Risk 5: "Security tool by unknown developer" trust problem
 - **Mitigation**: MIT paper foundation, minimal auditable codebase, transparent crypto (tweetnacl is well-vetted), MIT license. Invite security audits from community.
@@ -307,7 +307,7 @@ Priority 1 (This week):
   □ Complete MVP (crypto + policy + engine + audit)
   □ Create 15-second demo GIF
   □ Write README: demo → install → 30-second quickstart
-  □ Build `npx signet demo` interactive experience
+  □ Build `npx ai-signet demo` interactive experience
 
 Priority 2 (Launch week):
   □ Post Show HN

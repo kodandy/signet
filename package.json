@@ -1,5 +1,5 @@
 {
-  "name": "signet",
+  "name": "ai-signet",
   "version": "0.1.0",
   "description": "Cryptographic authorization delegation layer for local AI agents",
   "type": "module",

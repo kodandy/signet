@@ -49,10 +49,10 @@ Tamper-proof audit trail.
 
 ```bash
 # Try the interactive demo (no setup needed)
-npx signet demo
+npx ai-signet demo
 
 # Install
-npm install -g signet
+npm install -g ai-signet
 
 # Initialize with auto-detection (reads package.json, .env, git remote, etc.)
 signet init --smart
@@ -224,7 +224,7 @@ templates/        Preset policy files (node, python, general)
 |--|---------|-------------------|-----------|------------|
 | Approach | Containment | Policy engine | Key vault | **Crypto delegation** |
 | Target | Single agent | Enterprise | Browser | **Local dev** |
-| Setup | Config | Docker+IdP | SaaS | **`npx signet init`** |
+| Setup | Config | Docker+IdP | SaaS | **`npx ai-signet init`** |
 | Signatures | None | None | Partial | **All operations** |
 | Non-repudiation | No | No | No | **Yes** |
 | Multi-agent | No | Yes | No | **Planned** |

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-03-11
 
+### Changed
+
+- npm package name from `signet` to `ai-signet` (CLI command remains `signet`)
+
 ### Added
 
 - Ed25519 keypair generation, storage, and loading (`crypto/keys.ts`)
