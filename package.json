@@ -9,8 +9,8 @@
     "signet": "dist/index.js"
   },
   "files": [
-    "dist/",
-    "templates/"
+    "dist",
+    "templates"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -18,15 +18,15 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "ai",
-    "agent",
+    "ai-agent",
     "authorization",
     "delegation",
     "ed25519",
-    "cryptographic",
+    "cryptography",
     "security",
     "claude-code",
-    "audit"
+    "credential-isolation",
+    "audit-trail"
   ],
   "repository": {
     "type": "git",

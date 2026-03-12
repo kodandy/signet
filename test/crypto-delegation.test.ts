@@ -19,6 +19,34 @@ const testScope: Scope = {
 };
 
 describe("crypto/delegation", () => {
+  describe("createDelegation — input validation", () => {
+    test("throws on invalid base64 agentPubKey", () => {
+      const userKey = generateKeyPair();
+      expect(() =>
+        createDelegation(userKey, "!!!not-valid-base64!!!", testScope),
+      ).toThrow("Invalid agentPubKey");
+    });
+
+    test("throws when agentPubKey is not 32 bytes", () => {
+      const userKey = generateKeyPair();
+      // 16バイトの短い鍵
+      const shortKey = encodeBase64(new Uint8Array(16));
+      expect(() =>
+        createDelegation(userKey, shortKey, testScope),
+      ).toThrow("expected 32 bytes");
+    });
+
+    test("throws on invalid expires_at format", () => {
+      const userKey = generateKeyPair();
+      const agentPubKey = encodeBase64(generateKeyPair().publicKey);
+      expect(() =>
+        createDelegation(userKey, agentPubKey, testScope, {
+          expires_at: "not-a-date",
+        }),
+      ).toThrow("Invalid expires_at");
+    });
+  });
+
   describe("createDelegation", () => {
     test("creates a valid delegation token with required fields", () => {
       // Arrange
@@ -206,6 +234,15 @@ describe("crypto/delegation", () => {
       });
 
       expect(verifyDelegation(token, userPubKey)).toBe(true);
+    });
+
+    test("returns false for invalid base64 in userPubKey", () => {
+      const userKey = generateKeyPair();
+      const agentPubKey = encodeBase64(generateKeyPair().publicKey);
+
+      const token = createDelegation(userKey, agentPubKey, testScope);
+
+      expect(verifyDelegation(token, "!!!not-valid-base64!!!")).toBe(false);
     });
 
     test("different scopes produce different signatures", () => {

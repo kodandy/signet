@@ -44,11 +44,14 @@ Tamper-proof audit trail.
 ## Quick Start
 
 ```bash
+# Try the interactive demo (no setup needed)
+npx signet demo
+
 # Install
 npm install -g signet
 
-# Initialize (generates keys + policy file)
-signet init
+# Initialize with auto-detection (reads package.json, .env, git remote, etc.)
+signet init --smart
 
 # Edit policy
 vim signet.yml
@@ -119,13 +122,35 @@ Templates available: `--template node`, `--template python`, `--template general
 ## CLI
 
 ```
-signet init [--template <name>] [--claude-code]   Setup keys + policy
-signet activate                                    Enable vault + policies
-signet deactivate                                  Restore credentials
-signet status                                      Show current state
-signet check "<command>"                           Dry-run policy check
-signet log [--verify] [--export json|csv] [-n N]   Audit log
-signet keys list                                   List agent keys
+Core
+  signet init [--smart] [--template <name>] [--claude-code]
+                                                     Setup keys + policy
+  signet activate                                    Enable vault + policies
+  signet deactivate [--force]                        Restore credentials
+  signet status                                      Show current state
+  signet scan [--fix]                                Find exposed credentials
+  signet demo                                        Interactive walkthrough
+
+Policy & Checking
+  signet check "<target>" [--type shell|fs_*|network|credential]
+                                                     Dry-run policy check
+  signet log [--verify] [--export json|csv] [-n N]   Audit log
+
+Key Management
+  signet keys list                                   List agent keys
+  signet keys generate <name>                        Generate agent keypair
+  signet keys register <name> <pubkey>               Register agent public key
+
+Delegation & Tokens
+  signet delegate <pubkey> [--expires 4h] [--max-uses N] [-o file]
+                                                     Issue delegation token
+  signet tokens list                                 List issued tokens
+  signet revoke <signature> [--reason "..."]         Revoke a token
+  signet revoked                                     List revoked tokens
+
+Adapters
+  signet adapt claude-code                           Generate .claude/settings.json
+  signet adapt generic                               Generate PATH wrapper scripts
 ```
 
 ## How it works

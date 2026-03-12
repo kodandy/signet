@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { type KeyPair, sign, verify, encodeBase64, decodeBase64 } from "../crypto/keys";
 import { type DelegationToken, verifyDelegation } from "../crypto/delegation";
 import type { Scope } from "../policy/scope";
@@ -9,6 +9,8 @@ import {
   matchCredential,
   type MatchResult,
 } from "../policy/matcher";
+import { canonicalize } from "../util/canonical";
+import type { AuditLogger } from "../audit/logger";
 
 export interface ActionRequest {
   agent_id: string;       // agent public key (base64)
@@ -16,8 +18,12 @@ export interface ActionRequest {
   target: string;         // path, domain, command, credential name
   purpose?: string;       // LLM生成の説明
   timestamp: string;      // ISO 8601
+  nonce?: string;         // ランダムな一意値（リプレイ攻撃防止）
   signature: string;      // agent key で署名 (base64)
 }
+
+// リプレイ防止: タイムスタンプの最大許容ズレ（秒）
+const MAX_TIMESTAMP_DRIFT_SECONDS = 300; // 5分
 
 export interface ActionDecision {
   request_hash: string;
@@ -33,6 +39,8 @@ export type AskCallback = (request: ActionRequest) => Promise<boolean>;
 
 export interface EvaluateOptions {
   onAsk?: AskCallback;
+  auditLogger?: AuditLogger;     // 使用回数カウント・トークン無効化チェック用
+  context_hash?: string;          // リクエスト時のコンテキストハッシュ
 }
 
 /**
@@ -40,7 +48,7 @@ export interface EvaluateOptions {
  */
 function hashRequest(request: ActionRequest): string {
   const { signature: _, ...payload } = request;
-  const json = JSON.stringify(payload, Object.keys(payload).sort());
+  const json = canonicalize(payload);
   return createHash("sha256").update(json).digest("hex");
 }
 
@@ -49,16 +57,14 @@ function hashRequest(request: ActionRequest): string {
  */
 function requestPayload(request: ActionRequest): Uint8Array {
   const { signature: _, ...payload } = request;
-  const json = JSON.stringify(payload, Object.keys(payload).sort());
-  return new TextEncoder().encode(json);
+  return new TextEncoder().encode(canonicalize(payload));
 }
 
 /**
  * ActionDecisionの署名対象ペイロードを生成
  */
 function decisionPayload(decision: Omit<ActionDecision, "signature">): Uint8Array {
-  const json = JSON.stringify(decision, Object.keys(decision).sort());
-  return new TextEncoder().encode(json);
+  return new TextEncoder().encode(canonicalize(decision));
 }
 
 function signDecision(
@@ -89,16 +95,16 @@ function makeDecision(
 
 /**
  * ActionRequest署名を生成するヘルパー（エージェント側で使用）
+ * nonceが未設定の場合、自動的にランダムnonceを付与する
  */
 export function signActionRequest(
   request: Omit<ActionRequest, "signature">,
   agentSecretKey: Uint8Array,
 ): ActionRequest {
-  const payload = new TextEncoder().encode(
-    JSON.stringify(request, Object.keys(request).sort()),
-  );
+  const withNonce = request.nonce ? request : { ...request, nonce: randomBytes(16).toString("hex") };
+  const payload = new TextEncoder().encode(canonicalize(withNonce));
   const sig = sign(payload, agentSecretKey);
-  return { ...request, signature: encodeBase64(sig) };
+  return { ...withNonce, signature: encodeBase64(sig) };
 }
 
 /**
@@ -121,6 +127,24 @@ export async function evaluate(
 ): Promise<ActionDecision> {
   const reqHash = hashRequest(request);
 
+  // 0. タイムスタンプ鮮度チェック（リプレイ攻撃防止）
+  const requestTime = new Date(request.timestamp).getTime();
+  const nowMs = Date.now();
+  if (isNaN(requestTime)) {
+    return makeDecision(reqHash, false, "Invalid request timestamp", "policy", userKey);
+  }
+  const driftSeconds = Math.abs(nowMs - requestTime) / 1000;
+  if (driftSeconds > MAX_TIMESTAMP_DRIFT_SECONDS) {
+    return makeDecision(reqHash, false, `Request timestamp too far from current time (${Math.round(driftSeconds)}s drift, max ${MAX_TIMESTAMP_DRIFT_SECONDS}s)`, "policy", userKey);
+  }
+
+  // 0.5 Nonce重複チェック（リプレイ攻撃防止）
+  if (request.nonce && opts?.auditLogger) {
+    if (opts.auditLogger.isNonceUsed(request.nonce)) {
+      return makeDecision(reqHash, false, "Duplicate nonce: possible replay attack", "policy", userKey);
+    }
+  }
+
   // 1. agent署名検証
   const agentPubKey = decodeBase64(request.agent_id);
   const payload = requestPayload(request);
@@ -130,13 +154,17 @@ export async function evaluate(
     return makeDecision(reqHash, false, "Invalid agent signature", "policy", userKey);
   }
 
-  // 2. DelegationToken検証 — agent_idがsubjectと一致するか
-  if (request.agent_id !== delegation.subject) {
+  // 2. DelegationToken検証 — agent_idがsubjectと一致するか（タイミングセーフ）
+  const agentIdBuf = Buffer.from(request.agent_id, "utf-8");
+  const subjectBuf = Buffer.from(delegation.subject, "utf-8");
+  if (agentIdBuf.length !== subjectBuf.length || !timingSafeEqual(agentIdBuf, subjectBuf)) {
     return makeDecision(reqHash, false, "Agent not authorized by delegation token", "policy", userKey);
   }
 
-  // 3. DelegationToken署名検証
-  if (!verifyDelegation(delegation, delegation.issuer)) {
+  // 3. DelegationToken署名検証 — ユーザーの実際の公開鍵で検証
+  //    delegation.issuer ではなく userKey.publicKey を使う（自己署名攻撃防止）
+  const userPubKeyB64 = encodeBase64(userKey.publicKey);
+  if (!verifyDelegation(delegation, userPubKeyB64)) {
     return makeDecision(reqHash, false, "Invalid delegation token signature", "policy", userKey);
   }
 
@@ -144,6 +172,33 @@ export async function evaluate(
   const now = new Date();
   if (new Date(delegation.expires_at) <= now) {
     return makeDecision(reqHash, false, "Delegation token expired", "policy", userKey);
+  }
+
+  // 4.5 トークン無効化チェック
+  if (opts?.auditLogger) {
+    const tokenHash = createHash("sha256")
+      .update(delegation.signature)
+      .digest("hex");
+
+    if (opts.auditLogger.isTokenRevoked(tokenHash)) {
+      return makeDecision(reqHash, false, "Delegation token has been revoked", "policy", userKey);
+    }
+
+    // 4.6 delegation max_uses チェック
+    if (delegation.max_uses !== undefined) {
+      const usageKey = `delegation:${tokenHash}`;
+      const currentCount = opts.auditLogger.getUsageCount(usageKey);
+      if (currentCount >= delegation.max_uses) {
+        return makeDecision(reqHash, false, `Delegation token max_uses exceeded (${delegation.max_uses})`, "policy", userKey);
+      }
+    }
+
+    // 4.7 context_hash 検証
+    if (delegation.context_hash && opts.context_hash) {
+      if (delegation.context_hash !== opts.context_hash) {
+        return makeDecision(reqHash, false, "Context hash mismatch", "policy", userKey);
+      }
+    }
   }
 
   // 5. ポリシーマッチング
@@ -154,13 +209,71 @@ export async function evaluate(
   }
 
   if (matchResult === "allow") {
+    // credential max_uses チェック
+    if (request.action === "use_credential" && opts?.auditLogger && scope.credentials) {
+      const credRule = scope.credentials[request.target];
+      if (credRule?.max_uses !== undefined) {
+        const credKey = `credential:${request.target}`;
+        const currentCount = opts.auditLogger.getUsageCount(credKey);
+        if (currentCount >= credRule.max_uses) {
+          return makeDecision(reqHash, false, `Credential max_uses exceeded for ${request.target} (${credRule.max_uses})`, "policy", userKey);
+        }
+        opts.auditLogger.incrementUsage(credKey);
+      }
+    }
+
+    // delegation token 使用カウントをインクリメント
+    if (opts?.auditLogger && delegation.max_uses !== undefined) {
+      const tokenHash = createHash("sha256")
+        .update(delegation.signature)
+        .digest("hex");
+      opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
+    }
+
+    // Nonceを使用済みとして記録
+    if (request.nonce && opts?.auditLogger) {
+      opts.auditLogger.recordNonce(request.nonce);
+    }
+
     return makeDecision(reqHash, true, `Allowed by policy: ${request.action} on ${request.target}`, "policy", userKey);
   }
 
   if (matchResult === "ask") {
     if (opts?.onAsk) {
+      // credential max_uses チェック（ask判定のクレデンシャルにも適用）
+      if (request.action === "use_credential" && opts?.auditLogger && scope.credentials) {
+        const credRule = scope.credentials[request.target];
+        if (credRule?.max_uses !== undefined) {
+          const credKey = `credential:${request.target}`;
+          const currentCount = opts.auditLogger.getUsageCount(credKey);
+          if (currentCount >= credRule.max_uses) {
+            return makeDecision(reqHash, false, `Credential max_uses exceeded for ${request.target} (${credRule.max_uses})`, "policy", userKey);
+          }
+        }
+      }
+
       const approved = await opts.onAsk(request);
       if (approved) {
+        // 承認時に使用カウントをインクリメント
+        if (opts.auditLogger) {
+          if (request.action === "use_credential" && scope.credentials) {
+            const credRule = scope.credentials[request.target];
+            if (credRule?.max_uses !== undefined) {
+              opts.auditLogger.incrementUsage(`credential:${request.target}`);
+            }
+          }
+          if (delegation.max_uses !== undefined) {
+            const tokenHash = createHash("sha256")
+              .update(delegation.signature)
+              .digest("hex");
+            opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
+          }
+        }
+        // Nonceを使用済みとして記録
+        if (request.nonce && opts?.auditLogger) {
+          opts.auditLogger.recordNonce(request.nonce);
+        }
+
         return makeDecision(reqHash, true, `Approved by user: ${request.action} on ${request.target}`, "user", userKey);
       }
       return makeDecision(reqHash, false, `Rejected by user: ${request.action} on ${request.target}`, "user", userKey);
@@ -197,9 +310,13 @@ export function verifyDecision(
   decision: ActionDecision,
   userPubKey: string,
 ): boolean {
-  const { signature, ...payload } = decision;
-  const msg = decisionPayload(payload);
-  const sig = decodeBase64(signature);
-  const pubKey = decodeBase64(userPubKey);
-  return verify(msg, sig, pubKey);
+  try {
+    const { signature, ...payload } = decision;
+    const msg = decisionPayload(payload);
+    const sig = decodeBase64(signature);
+    const pubKey = decodeBase64(userPubKey);
+    return verify(msg, sig, pubKey);
+  } catch {
+    return false;
+  }
 }

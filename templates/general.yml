@@ -28,6 +28,21 @@ scope:
       - "rm -rf *"
       - "sudo *"
       - "chmod 777 *"
+      # データ送信・流出防止
+      - "curl *"
+      - "wget *"
+      - "nc *"
+      - "ncat *"
+      - "netcat *"
+      - "scp *"
+      - "rsync *"
+      - "ftp *"
+      - "sftp *"
+      # 環境変数・秘密の表示防止
+      - "env"
+      - "printenv *"
+      - "cat /proc/*/environ"
+      - "cat /proc/*/maps"
     ask:
       - "git push *"
       - "npm publish *"

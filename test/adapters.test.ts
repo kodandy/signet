@@ -84,6 +84,113 @@ describe("adapters/claude-code", () => {
     expect(content).not.toContain("old content");
     expect(content).toContain("Blocked paths");
   });
+
+  test("merges with existing permissions instead of overwriting", () => {
+    const claudeDir = join(testDir, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(
+      join(claudeDir, "settings.json"),
+      JSON.stringify({
+        permissions: {
+          deny: ["Bash(curl *)", "Bash(wget *)"],
+          ask: ["Bash(docker *)"],
+          allow: ["Read(**)"],
+        },
+      }),
+    );
+
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf-8"));
+    // existing deny rules preserved
+    expect(settings.permissions.deny).toContain("Bash(curl *)");
+    expect(settings.permissions.deny).toContain("Bash(wget *)");
+    // new signet deny rules added
+    expect(settings.permissions.deny).toContain("Bash(rm -rf *)");
+    expect(settings.permissions.deny).toContain("Bash(sudo *)");
+    // existing ask rules preserved
+    expect(settings.permissions.ask).toContain("Bash(docker *)");
+    // new signet ask rules added
+    expect(settings.permissions.ask).toContain("Bash(git push *)");
+    // non-deny/ask permissions preserved
+    expect(settings.permissions.allow).toEqual(["Read(**)"]);
+  });
+
+  test("deduplicates when running adapter twice", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    const denyCount = settings.permissions.deny.filter(
+      (r: string) => r === "Bash(rm -rf *)",
+    ).length;
+    expect(denyCount).toBe(1);
+  });
+
+  test("generates sandbox config with filesystem and network", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    // sandbox enabled
+    expect(settings.sandbox.enabled).toBe(true);
+    // filesystem writable → sandbox allowWrite
+    expect(settings.sandbox.filesystem.allowWrite).toContain("./src/**");
+    // filesystem blocked → sandbox denyRead + denyWrite
+    expect(settings.sandbox.filesystem.denyRead).toContain("./.env");
+    expect(settings.sandbox.filesystem.denyWrite).toContain("./.env");
+    // home dir sensitive paths added
+    expect(settings.sandbox.filesystem.denyRead).toContain("~/.aws/**");
+    expect(settings.sandbox.filesystem.denyRead).toContain("~/.ssh/**");
+    // network deny:* + allow → allowedDomains
+    expect(settings.sandbox.network.allowedDomains).toContain("github.com");
+    expect(settings.sandbox.network.allowedDomains).toContain("registry.npmjs.org");
+  });
+
+  test("generates Read deny rules for blocked files", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.permissions.deny).toContain("Read(./.env)");
+    expect(settings.permissions.deny).toContain("Read(~/.ssh/**)");
+  });
+
+  test("denies curl/wget when network is deny-all", () => {
+    generateClaudeCodeSettings(testScope, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.permissions.deny).toContain("Bash(curl *)");
+    expect(settings.permissions.deny).toContain("Bash(wget *)");
+  });
+
+  test("no network sandbox when no deny-all rule", () => {
+    const scopeNoNetDeny: Scope = {
+      filesystem: { writable: ["./src/**"], readable: ["./**"] },
+      network: { allow: ["github.com"] },
+    };
+    generateClaudeCodeSettings(scopeNoNetDeny, testDir);
+
+    const settings = JSON.parse(
+      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.sandbox.enabled).toBe(true);
+    expect(settings.sandbox.network).toBeUndefined();
+  });
+
+  test("throws when existing settings.json contains malformed JSON", () => {
+    const claudeDir = join(testDir, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "settings.json"), "{ not valid json }}}");
+
+    expect(() => generateClaudeCodeSettings(testScope, testDir)).toThrow();
+  });
 });
 
 describe("adapters/generic", () => {
@@ -121,5 +228,12 @@ describe("adapters/generic", () => {
   test("generatePathSetup returns correct export", () => {
     const setup = generatePathSetup("/home/user/.signet/bin");
     expect(setup).toBe('export PATH="/home/user/.signet/bin:$PATH"');
+  });
+
+  test("generateWrappers returns empty array for scope with no shell rules", () => {
+    const emptyScope: Scope = { filesystem: { readable: ["./**"] } };
+    const wrapped = generateWrappers(emptyScope, testBinDir);
+
+    expect(wrapped).toEqual([]);
   });
 });

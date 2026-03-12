@@ -1,4 +1,8 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, afterEach } from "vitest";
+import { createHash } from "node:crypto";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { generateKeyPair, encodeBase64, sign } from "../src/crypto/keys";
 import { createDelegation } from "../src/crypto/delegation";
 import type { Scope } from "../src/policy/scope";
@@ -8,6 +12,7 @@ import {
   verifyDecision,
   type ActionRequest,
 } from "../src/engine/evaluator";
+import { AuditLogger } from "../src/audit/logger";
 
 // テスト用ヘルパー
 function makeSignedRequest(
@@ -198,6 +203,17 @@ describe("engine/evaluator", () => {
       expect(decision.allowed).toBe(false);
       expect(decision.reason).toContain("Requires user approval");
     });
+
+    test("propagates error when onAsk callback throws", async () => {
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "git push origin main");
+      await expect(
+        evaluate(request, delegation, testScope, userKey, {
+          onAsk: async () => {
+            throw new Error("callback error");
+          },
+        }),
+      ).rejects.toThrow("callback error");
+    });
   });
 
   describe("クレデンシャル判定", () => {
@@ -249,6 +265,39 @@ describe("engine/evaluator", () => {
 
       expect(decision.request_hash).toMatch(/^[a-f0-9]{64}$/);
     });
+
+    test("signActionRequest produces consistent signature for same input with same nonce", () => {
+      const fixedTimestamp = "2025-01-01T00:00:00.000Z";
+      const fixedNonce = "fixed-nonce-for-test";
+      const req1 = signActionRequest(
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp, nonce: fixedNonce },
+        agentKey.secretKey,
+      );
+      const req2 = signActionRequest(
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp, nonce: fixedNonce },
+        agentKey.secretKey,
+      );
+
+      expect(req1.signature).toBe(req2.signature);
+    });
+
+    test("signActionRequest auto-generates nonce when not provided", () => {
+      const fixedTimestamp = "2025-01-01T00:00:00.000Z";
+      const req = signActionRequest(
+        { agent_id: agentPubKey, action: "shell", target: "npm test", timestamp: fixedTimestamp },
+        agentKey.secretKey,
+      );
+
+      expect(req.nonce).toBeDefined();
+      expect(req.nonce!.length).toBe(32); // 16 bytes hex = 32 chars
+    });
+
+    test("verifyDecision returns false for invalid base64 pubkey", async () => {
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const decision = await evaluate(request, delegation, testScope, userKey);
+
+      expect(verifyDecision(decision, "!!!invalid-base64!!!")).toBe(false);
+    });
   });
 
   describe("未知のアクション", () => {
@@ -258,6 +307,283 @@ describe("engine/evaluator", () => {
 
       expect(decision.allowed).toBe(false);
       expect(decision.reason).toContain("No matching policy");
+    });
+  });
+
+  describe("max_uses enforcement", () => {
+    const testDir = join(tmpdir(), `signet-engine-maxuses-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("enforces delegation token max_uses", async () => {
+      logger = new AuditLogger(join(testDir, "test.db"));
+      const limitedDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 2,
+      });
+
+      // 1st use - allowed
+      const req1 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d1 = await evaluate(req1, limitedDelegation, testScope, userKey, { auditLogger: logger });
+      expect(d1.allowed).toBe(true);
+
+      // 2nd use - allowed
+      const req2 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d2 = await evaluate(req2, limitedDelegation, testScope, userKey, { auditLogger: logger });
+      expect(d2.allowed).toBe(true);
+
+      // 3rd use - denied (max_uses exceeded)
+      const req3 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d3 = await evaluate(req3, limitedDelegation, testScope, userKey, { auditLogger: logger });
+      expect(d3.allowed).toBe(false);
+      expect(d3.reason).toContain("max_uses exceeded");
+    });
+
+    test("enforces credential max_uses", async () => {
+      logger = new AuditLogger(join(testDir, "test2.db"));
+      const scopeWithCredMaxUses: Scope = {
+        ...testScope,
+        credentials: {
+          limited_token: {
+            allowed_actions: ["*"],
+            max_uses: 1,
+            require_approval: false,
+          },
+        },
+      };
+
+      const credDelegation = createDelegation(userKey, agentPubKey, scopeWithCredMaxUses, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+      });
+
+      // 1st use - allowed
+      const req1 = makeSignedRequest(agentKey.secretKey, agentPubKey, "use_credential", "limited_token", "some action");
+      const d1 = await evaluate(req1, credDelegation, scopeWithCredMaxUses, userKey, { auditLogger: logger });
+      expect(d1.allowed).toBe(true);
+
+      // 2nd use - denied
+      const req2 = makeSignedRequest(agentKey.secretKey, agentPubKey, "use_credential", "limited_token", "some action");
+      const d2 = await evaluate(req2, credDelegation, scopeWithCredMaxUses, userKey, { auditLogger: logger });
+      expect(d2.allowed).toBe(false);
+      expect(d2.reason).toContain("Credential max_uses exceeded");
+    });
+
+    test("works without auditLogger (backwards compatible)", async () => {
+      // No auditLogger → max_uses not enforced, still works
+      const limitedDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 1,
+      });
+
+      const req1 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d1 = await evaluate(req1, limitedDelegation, testScope, userKey);
+      expect(d1.allowed).toBe(true);
+
+      // Without auditLogger, max_uses is not enforced
+      const req2 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d2 = await evaluate(req2, limitedDelegation, testScope, userKey);
+      expect(d2.allowed).toBe(true);
+    });
+  });
+
+  describe("token revocation", () => {
+    const testDir = join(tmpdir(), `signet-engine-revoke-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("denies request with revoked delegation token", async () => {
+      logger = new AuditLogger(join(testDir, "test.db"));
+
+      const tokenHash = createHash("sha256")
+        .update(delegation.signature)
+        .digest("hex");
+      logger.revokeToken(tokenHash, "test revocation");
+
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const decision = await evaluate(request, delegation, testScope, userKey, { auditLogger: logger });
+
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain("revoked");
+    });
+
+    test("allows request with non-revoked token", async () => {
+      logger = new AuditLogger(join(testDir, "test2.db"));
+
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const decision = await evaluate(request, delegation, testScope, userKey, { auditLogger: logger });
+
+      expect(decision.allowed).toBe(true);
+    });
+  });
+
+  describe("context_hash validation", () => {
+    const testDir = join(tmpdir(), `signet-engine-ctx-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("denies when context_hash does not match", async () => {
+      logger = new AuditLogger(join(testDir, "test.db"));
+
+      const contextDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        context_hash: "expected_hash_value",
+      });
+
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const decision = await evaluate(request, contextDelegation, testScope, userKey, {
+        auditLogger: logger,
+        context_hash: "different_hash_value",
+      });
+
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain("Context hash mismatch");
+    });
+
+    test("allows when context_hash matches", async () => {
+      logger = new AuditLogger(join(testDir, "test2.db"));
+
+      const contextDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        context_hash: "matching_hash",
+      });
+
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const decision = await evaluate(request, contextDelegation, testScope, userKey, {
+        auditLogger: logger,
+        context_hash: "matching_hash",
+      });
+
+      expect(decision.allowed).toBe(true);
+    });
+
+    test("skips context_hash check when not provided in options", async () => {
+      logger = new AuditLogger(join(testDir, "test3.db"));
+
+      const contextDelegation = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        context_hash: "some_hash",
+      });
+
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const decision = await evaluate(request, contextDelegation, testScope, userKey, {
+        auditLogger: logger,
+      });
+
+      // No context_hash in opts → skip check → allowed
+      expect(decision.allowed).toBe(true);
+    });
+  });
+
+  describe("replay protection", () => {
+    const testDir = join(tmpdir(), `signet-engine-replay-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("rejects request with stale timestamp", async () => {
+      const staleRequest = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date(Date.now() - 600_000).toISOString(), // 10分前
+        },
+        agentKey.secretKey,
+      );
+
+      const decision = await evaluate(staleRequest, delegation, testScope, userKey);
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain("timestamp too far");
+    });
+
+    test("rejects request with future timestamp", async () => {
+      const futureRequest = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date(Date.now() + 600_000).toISOString(), // 10分後
+        },
+        agentKey.secretKey,
+      );
+
+      const decision = await evaluate(futureRequest, delegation, testScope, userKey);
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain("timestamp too far");
+    });
+
+    test("rejects duplicate nonce (replay attack)", async () => {
+      logger = new AuditLogger(join(testDir, "replay.db"));
+      const fixedNonce = "unique-nonce-12345";
+
+      const req1 = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+          nonce: fixedNonce,
+        },
+        agentKey.secretKey,
+      );
+
+      // First request succeeds
+      const d1 = await evaluate(req1, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d1.allowed).toBe(true);
+
+      // Replay same request (same nonce) — must be rejected
+      const req2 = signActionRequest(
+        {
+          agent_id: agentPubKey,
+          action: "shell",
+          target: "npm test",
+          timestamp: new Date().toISOString(),
+          nonce: fixedNonce,
+        },
+        agentKey.secretKey,
+      );
+
+      const d2 = await evaluate(req2, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d2.allowed).toBe(false);
+      expect(d2.reason).toContain("Duplicate nonce");
+    });
+
+    test("allows requests with different nonces", async () => {
+      logger = new AuditLogger(join(testDir, "replay2.db"));
+
+      const req1 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d1 = await evaluate(req1, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d1.allowed).toBe(true);
+
+      const req2 = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const d2 = await evaluate(req2, delegation, testScope, userKey, { auditLogger: logger });
+      expect(d2.allowed).toBe(true);
+
+      // Different auto-generated nonces
+      expect(req1.nonce).not.toBe(req2.nonce);
     });
   });
 });

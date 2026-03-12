@@ -4,4 +4,8 @@ dist/
 result
 result-*
 *.tmp
+*.db
 .DS_Store
+.env
+.env.*
+!.env.example

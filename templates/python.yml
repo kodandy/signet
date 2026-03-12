@@ -57,6 +57,20 @@ scope:
       - "sudo *"
       - "chmod 777 *"
       - "pip install --user *"
+      # データ送信・流出防止
+      - "curl *"
+      - "wget *"
+      - "nc *"
+      - "ncat *"
+      - "netcat *"
+      - "scp *"
+      - "rsync *"
+      - "ftp *"
+      - "sftp *"
+      # 環境変数・秘密の表示防止
+      - "env"
+      - "printenv *"
+      - "cat /proc/*/environ"
     ask:
       - "git push *"
       - "twine upload *"
