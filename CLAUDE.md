@@ -43,21 +43,23 @@ docs/           — Architecture + context docs
 
 ## Current Phase
 
-MVP Week 1: Implement crypto/, policy/, engine/, audit/ core modules.
+Week 2: Polish, distribution, and integrations.
 
-## Implementation Order
+Week 1 (complete): crypto/, policy/, engine/, audit/, vault/, adapters/, CLI, security hardening, GTM readiness, demo GIF.
 
-1. `crypto/keys.ts` — keypair gen/store/load
-2. `crypto/delegation.ts` — token create/verify
-3. `policy/parser.ts` — YAML → Scope
-4. `policy/matcher.ts` — glob matching
-5. `engine/evaluator.ts` — request → decision
-6. `audit/logger.ts` — SQLite + chain hash
+## Next Steps
+
+1. npm publish (0.1.0)
+2. CI/CD — move `docs/ci/` templates to `.github/workflows/`
+3. OpenClaw / Cursor adapter improvements
+4. LLM-based natural language → permission auto-generation
+5. Slack/webhook approval flow
+6. W3C DID/VC integration (multi-agent)
 
 ## Coding Conventions
 
 - Bun runtime (use Bun APIs where available, maintain Node compat for npm distribution)
-- Tests: `bun:test`
+- Tests: `vitest` (`npm test`)
 - Minimal dependencies: tweetnacl, better-sqlite3, commander, yaml
 - Error messages: English
 - Code comments: Japanese OK
