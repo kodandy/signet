@@ -5,6 +5,10 @@
 Cryptographic authorization delegation layer for local AI agents.
 Lightweight implementation of [South et al. "Authenticated Delegation and Authorized AI Agents" (MIT, 2025)](https://arxiv.org/abs/2501.09674).
 
+<p align="center">
+  <img src="demo/signet-demo.gif" alt="signet demo" width="720">
+</p>
+
 ---
 
 ## What this does
