@@ -1004,11 +1004,11 @@ program
     console.log(`  ${green("✓")} Credential vault isolates .env files (AES-256-GCM)`);
     console.log();
     console.log(bold("  Get started:"));
-    console.log(`    ${cyan("npm install -g signet")}`);
+    console.log(`    ${cyan("npm install -g ai-signet")}`);
     console.log(`    ${cyan("signet init --template node")}`);
     console.log(`    ${cyan("signet activate")}`);
     console.log();
-    console.log(dim("  https://github.com/anthropics/signet"));
+    console.log(dim("  https://github.com/kodandy/signet"));
     console.log();
   });
 

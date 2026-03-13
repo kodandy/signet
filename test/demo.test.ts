@@ -93,7 +93,7 @@ describe("signet demo", () => {
     expect(demoOutput).toContain("Summary");
     expect(demoOutput).toContain("Ed25519 keypairs generated");
     expect(demoOutput).toContain("tamper-evident");
-    expect(demoOutput).toContain("npm install -g signet");
+    expect(demoOutput).toContain("npm install -g ai-signet");
     expect(demoOutput).toContain("signet init");
     expect(demoOutput).toContain("signet activate");
   });
