@@ -1,6 +1,6 @@
 # signet: Go-To-Market Strategy
 
-Last updated: 2026-03-10
+Last updated: 2026-03-16
 
 ## Market Position
 
@@ -31,11 +31,29 @@ Cryptographic authorization delegation for local AI agents. Ed25519 signatures, 
 - Anthropic shipped Claude Code Security (vulnerability scanning) — authorization is the obvious next step
 - OpenAI shipped Codex Security (Mar 6, 2026) — no authorization component
 
-### Competitive Landscape
+### Competitive Landscape (updated 2026-03-16)
+
+#### Tier 1: Direct competitors (local agent security)
+
+| Tool | Stars | What it does | signet's edge |
+|------|-------|-------------|---------------|
+| **Sage** (Gen Digital) | 133 | ADR: hook-based detection+block for MCP tool calls. 200+ rules, TypeScript | Sage = detection+block (ADR), not authorization. No delegation tokens, no credential vault, no audit chain. Complementary |
+| **nono** | 1,100 | Kernel sandbox (Seatbelt/Landlock) for AI agents. Rust | OS-level isolation, not authorization. No credential delegation, no policy language. Complementary — nono sandboxes, signet authorizes |
+| **rampart** | 52 | YAML policy firewall for MCP tools. Go | Closest simple competitor. But no crypto signatures, no credential vault, no audit chain. Policy-only |
+| **cupcake** | 8 | OPA/Rego-based MCP policy engine | Heavyweight (OPA dependency). No crypto, no vault. Enterprise-oriented policy |
+
+#### Tier 2: Enterprise / infrastructure-tier
+
+| Tool | Stars | What it does | signet's edge |
+|------|-------|-------------|---------------|
+| **clawdstrike** | 245 | Ed25519 verdict signing, fleet security monitoring. TypeScript | Enterprise fleet tool. Requires infrastructure. Not for individual devs |
+| **DeepSecure** | 44 | Docker+PostgreSQL+Redis auth platform. Macaroon delegation. Python | Heavy infrastructure. Not `npm install` simple. Different audience |
+| **agent-passport-system** | 5 | Ed25519 delegation tokens. TypeScript | Conceptually closest. But no vault, no audit chain, not production-ready |
+
+#### Tier 3: Platform / API-level (different category)
 
 | Tool | What it does | signet's edge |
 |------|-------------|---------------|
-| **Sage** (Gen Digital, Mar 9 2026) | ADR: intercept & block malware/phishing in agent tool calls | Sage = detection. signet = authorization. Complementary, not competing |
 | **Cerbos** | OSS YAML policy engine (PDP) | Microservices-focused. No local agent support, no credential isolation |
 | **Arcade** | OSS OAuth permission checker for agent tool calls | API/OAuth only. No shell/fs/credential scope |
 | **Nango** | OSS OAuth broker for 700+ APIs | Cloud API integration. No local credentials |
@@ -45,14 +63,33 @@ Cryptographic authorization delegation for local AI agents. Ed25519 signatures, 
 
 ### signet's Unique Combination
 
-No existing tool combines all of:
+**No existing tool combines all four properties simultaneously:**
 
-1. Cryptographic signing (Ed25519) for every request/decision
-2. Local-first (no server, no Docker, no SaaS)
-3. Shell / filesystem / credential scope (not just MCP/API)
-4. Agent-agnostic (Claude Code, OpenClaw, Cursor, any CLI)
-5. Tamper-proof audit trail (chain-hashed SQLite)
-6. Credential isolation (AES-256-CBC vault with per-command injection)
+| Property | signet | Sage | nono | rampart | clawdstrike | DeepSecure | agent-passport |
+|----------|--------|------|------|---------|-------------|------------|----------------|
+| Ed25519 delegation tokens | YES | — | — | — | YES (verdicts only) | Macaroon | YES |
+| Credential vault | YES | — | — | — | — | — | — |
+| Chain-hashed audit | YES | — | — | — | — | — | — |
+| Zero infrastructure | YES | YES | YES | YES | — | — | YES |
+
+1. **Cryptographic signing** (Ed25519) for every request/decision
+2. **Credential isolation** (AES-256-GCM vault with per-command injection)
+3. **Tamper-proof audit** (chain-hashed SQLite)
+4. **Zero infrastructure** (no server, no Docker, no SaaS — just `npm install`)
+
+Plus: shell/filesystem/credential scope (not just MCP/API), agent-agnostic (Claude Code, OpenClaw, Cursor, any CLI)
+
+### Complementary Stack Story
+
+signet is not a replacement for sandbox or detection tools — it's the missing authorization layer:
+
+```
+Layer 3: Detection+Block  → Sage (malware, phishing, supply chain)
+Layer 2: Authorization     → signet (delegation, credentials, audit)
+Layer 1: OS Sandbox        → nono / bubblewrap / Seatbelt (process isolation)
+```
+
+This "defense in depth" narrative positions signet without competing with the highest-star tools.
 
 ## Target Users
 
@@ -285,8 +322,8 @@ Step 4: Propose integration
 
 ## Risks & Mitigations
 
-### Risk 1: Sage captures "local agent security" mindshare first
-- **Mitigation**: Position as complementary, not competing. Publish comparison article immediately. "Use Sage for detection, signet for authorization."
+### Risk 1: nono (1,100 stars) or Sage (133 stars) captures "local agent security" mindshare
+- **Mitigation**: Position as complementary layer, not competing. nono = OS sandbox, Sage = detection, signet = authorization. Publish "defense in depth" article showing all three together. The 3-layer narrative benefits all tools.
 
 ### Risk 2: Anthropic builds native authorization into Claude Code
 - **Mitigation**: Ship Claude Code adapter first. Make signet the obvious acquisition target. Agent-agnostic positioning means signet survives even if Claude Code goes native.
