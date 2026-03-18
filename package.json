@@ -42,7 +42,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.8.0",
     "commander": "^14.0.3",
     "tweetnacl": "^1.0.3",
     "yaml": "^2.8.2"
