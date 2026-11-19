@@ -32,7 +32,7 @@ signet is a cryptographic authorization delegation layer. Security-relevant desi
 - **Ed25519** (via tweetnacl) for all signing operations
 - **AES-256-GCM** for credential vault encryption
 - **Timing-safe comparisons** for all signature/key equality checks
-- **Chain-hashed audit log** (SHA-256) for tamper detection
+- **Chain-hashed audit log** (SHA-256) for tamper evidence (detection only, with the limits listed below)
 - **Nonce + timestamp** for replay attack prevention
 - **File permissions** (0o600/0o700) for all key material and vault data
 
@@ -42,13 +42,15 @@ signet protects against:
 
 - Unauthorized agent actions (signature verification)
 - Credential exposure (vault encryption + per-command injection)
-- Audit tampering (chain hashing)
+- Accidental corruption and simple edits of audit entries (chain hashing — detected by `signet log --verify`, not prevented)
 - Replay attacks (nonce tracking + timestamp freshness)
 - Token misuse (expiration, max_uses, revocation)
 
 signet does **not** protect against:
 
 - Compromised host OS (root access)
+- A process running as your own OS user that can write to `~/.signet/` (it can rewrite the audit log and recompute the whole hash chain, or truncate it, without `signet log --verify` noticing; there is no independent external checkpoint)
+- Actions that never pass through signet (PATH wrappers can be bypassed, so the audit log is not a complete record of agent activity)
 - Memory inspection of running processes
 - Side-channel attacks beyond timing (power analysis, EM)
 

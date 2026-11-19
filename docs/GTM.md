@@ -18,7 +18,7 @@ Individual developers using AI agents (Claude Code, OpenClaw, Cursor) locally ha
 
 ### One-liner
 
-Cryptographic authorization delegation for local AI agents. Ed25519 signatures, credential isolation, tamper-proof audit — in a single `npm install ai-signet`.
+Cryptographic authorization delegation for local AI agents. Ed25519 signatures, credential isolation, tamper-evident audit — in a single `npm install ai-signet`.
 
 ## Market Timing (as of March 2026)
 
@@ -74,7 +74,7 @@ Cryptographic authorization delegation for local AI agents. Ed25519 signatures, 
 
 1. **Cryptographic signing** (Ed25519) for every request/decision
 2. **Credential isolation** (AES-256-GCM vault with per-command injection)
-3. **Tamper-proof audit** (chain-hashed SQLite)
+3. **Tamper-evident audit** (chain-hashed SQLite; detects accidental corruption and simple edits, not full recomputation by a same-UID process — do not market as tamper-proof)
 4. **Zero infrastructure** (no server, no Docker, no SaaS — just `npm install`)
 
 Plus: shell/filesystem/credential scope (not just MCP/API), agent-agnostic (Claude Code, OpenClaw, Cursor, any CLI)

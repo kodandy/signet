@@ -70,7 +70,7 @@ Enter
 Sleep 3s
 
 # ─── 5. View audit trail ───
-Type "# 5. Tamper-proof audit trail with chain hashing"
+Type "# 5. Tamper-evident audit trail with chain hashing"
 Enter
 Sleep 1s
 Type "signet log -n 5"

@@ -15,7 +15,7 @@ I built signet because I was tired of the all-or-nothing trust model with AI cod
 - Every agent gets its own Ed25519 keypair
 - You issue signed delegation tokens defining scope (filesystem, network, shell, credentials), expiration, max uses
 - Every action request is signed, every approval is signed
-- Tamper-proof audit trail via chain-hashed SQLite
+- Tamper-evident audit trail via chain-hashed SQLite (catches accidental corruption and simple edits; a process running as your own user can still recompute the whole chain — there is no external checkpoint yet)
 
 ```bash
 npm install -g ai-signet
