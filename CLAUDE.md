@@ -7,7 +7,7 @@ Lightweight implementation of South et al. "Authenticated Delegation and Authori
 
 ## What this does
 
-AI agents (Claude Code, OpenClaw, Cursor) get their own Ed25519 keypair. Users issue signed delegation tokens defining what each agent can do. Every action request is signed, every approval is signed. Tamper-proof audit trail.
+AI agents (Claude Code, OpenClaw, Cursor) get their own Ed25519 keypair. Users issue signed delegation tokens defining what each agent can do. Every action request is signed, every approval is signed. Tamper-evident audit trail (detects accidental corruption and simple edits; a same-UID process that can write to `~/.signet/` can recompute the whole chain — see README "What the audit log does and does not guarantee").
 
 **Not a sandbox. Not a policy engine. A cryptographic trust layer.**
 
