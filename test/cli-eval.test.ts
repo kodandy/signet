@@ -472,6 +472,37 @@ describe("generic wrapper (end to end)", () => {
     expect(stdout).toContain("RAN:hello");
     expect(readAudit().entries.length).toBe(1);
   }, 30000);
+
+  test("a PATH entry containing a newline is not cut short into another directory", () => {
+    setupWrapper(true);
+    const decoyDir = join(TEST_DIR, "a");
+    const newlineDir = join(TEST_DIR, "a\nb");
+    mkdirSync(decoyDir, { recursive: true });
+    writeFileSync(join(decoyDir, "fakecmd"), `#!/bin/sh\necho "DECOY:$*"\n`, { mode: 0o755 });
+    mkdirSync(newlineDir, { recursive: true });
+    writeFileSync(join(newlineDir, "fakecmd"), `#!/bin/sh\necho "RAN:$*"\n`, { mode: 0o755 });
+    const path = `${binDir}:${shimDir}:${nodeBin}:/usr/bin:/bin:${newlineDir}`;
+
+    const { stdout, exitCode } = runWrappedBounded(path, ["hello"]);
+
+    expect(stdout).not.toContain("DECOY:");
+    expect(stdout).toContain("RAN:hello");
+    expect(exitCode).toBe(0);
+  }, 30000);
+
+  test("a copy of the wrapper in another PATH directory is skipped, and the real command runs once", () => {
+    setupWrapper(true);
+    const copyDir = join(TEST_DIR, "copy");
+    mkdirSync(copyDir, { recursive: true });
+    writeFileSync(join(copyDir, "fakecmd"), readFileSync(join(binDir, "fakecmd")), { mode: 0o755 });
+    const path = `${binDir}:${copyDir}:${shimDir}:${realDir}:${nodeBin}:/usr/bin:/bin`;
+
+    const { stdout, exitCode } = runWrappedBounded(path, ["hello"]);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("RAN:hello");
+    expect(readAudit().entries.length).toBe(1);
+  }, 30000);
 });
 
 describe("generic wrapper", () => {
