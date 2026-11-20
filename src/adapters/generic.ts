@@ -9,7 +9,7 @@ import type { Scope } from "../policy/scope";
  * 仕組み:
  *   1. ~/.signet/bin/ にラッパースクリプトを生成
  *   2. PATHの先頭に~/.signet/bin/を追加
- *   3. ラッパーがsignet checkを通してから実コマンドを実行
+ *   3. ラッパーがsignet evalを通してから実コマンドを実行（判定は監査ログに残る）
  */
 export function generateWrappers(
   scope: Scope,
@@ -31,6 +31,8 @@ export function generateWrappers(
     // パターンの最初のワード = コマンド名
     const cmdName = pattern.split(" ")[0];
     if (!cmdName || cmdName === "*") continue;
+    // コマンド名はファイル名とスクリプト本文に入る。パス区切りやシェルの特殊文字を含むものは生成しない
+    if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(cmdName)) continue;
 
     const wrapperPath = join(binDir, cmdName);
     if (wrappedCommands.includes(cmdName)) continue;
@@ -55,17 +57,29 @@ if [ -z "$ORIGINAL" ]; then
   exit 127
 fi
 
-# Build the full command string for policy check
-FULL_CMD="${cmdName} $*"
-
-# Check with signet (if available)
-if command -v signet &>/dev/null; then
-  signet check "$FULL_CMD" 2>/dev/null
-  CHECK_RESULT=$?
-  if [ $CHECK_RESULT -ne 0 ]; then
-    echo "signet: command blocked by policy: $FULL_CMD" >&2
-    exit 1
+# Build the full command string for policy check. Empty arguments are skipped so that
+# they cannot add a space that moves the string past a deny pattern.
+FULL_CMD="${cmdName}"
+for ARG in "$@"; do
+  if [ -n "$ARG" ]; then
+    FULL_CMD="$FULL_CMD $ARG"
   fi
+done
+
+# Evaluate with signet. 'signet eval' signs the request, records the decision in the
+# audit log, and exits 0 only when the command is allowed. It needs SIGNET_AGENT and
+# SIGNET_TOKEN; without them it exits 2. Anything but 0 blocks the command, and so does
+# a missing signet: a wrapper that cannot ask must not run the command.
+if ! command -v signet &>/dev/null; then
+  echo "signet: signet not found in PATH, command blocked: $FULL_CMD" >&2
+  exit 1
+fi
+
+signet eval "$FULL_CMD" >/dev/null
+EVAL_RESULT=$?
+if [ $EVAL_RESULT -ne 0 ]; then
+  echo "signet: command blocked (exit $EVAL_RESULT): $FULL_CMD" >&2
+  exit 1
 fi
 
 # Execute original command
