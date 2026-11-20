@@ -25,6 +25,10 @@ export interface ActionRequest {
 // リプレイ防止: タイムスタンプの最大許容ズレ（秒）
 const MAX_TIMESTAMP_DRIFT_SECONDS = 300; // 5分
 
+// 同じリクエストは最初の使用から最大でズレ許容の 2 倍のあいだ鮮度チェックを通る。
+// nonce はそれより長く残し、それを過ぎたものだけ消す。
+const NONCE_RETENTION_SECONDS = MAX_TIMESTAMP_DRIFT_SECONDS * 3;
+
 export interface ActionDecision {
   request_hash: string;
   allowed: boolean;
@@ -107,6 +111,46 @@ export function signActionRequest(
   return { ...withNonce, signature: encodeBase64(sig) };
 }
 
+function delegationUsageKey(delegation: DelegationToken): string {
+  const tokenHash = createHash("sha256").update(delegation.signature).digest("hex");
+  return `delegation:${tokenHash}`;
+}
+
+/**
+ * このリクエストに掛かる max_uses を 1 回分まとめて消費する。
+ * どれかが使い切られていれば何も消費せず、拒否理由を返す。
+ */
+function spendUses(
+  auditLogger: AuditLogger,
+  request: ActionRequest,
+  delegation: DelegationToken,
+  scope: Scope,
+): string | null {
+  const limits: Array<{ key: string; max: number }> = [];
+  const credentialKey = `credential:${request.target}`;
+  const credentialMax = request.action === "use_credential"
+    ? scope.credentials?.[request.target]?.max_uses
+    : undefined;
+  if (credentialMax !== undefined) {
+    limits.push({ key: credentialKey, max: credentialMax });
+  }
+  if (delegation.max_uses !== undefined) {
+    limits.push({ key: delegationUsageKey(delegation), max: delegation.max_uses });
+  }
+  if (limits.length === 0) return null;
+
+  const refusedKey = auditLogger.consumeUsage(limits);
+  if (refusedKey === null) return null;
+  return refusedKey === credentialKey && credentialMax !== undefined
+    ? `Credential max_uses exceeded for ${request.target} (${credentialMax})`
+    : `Delegation token max_uses exceeded (${delegation.max_uses})`;
+}
+
+function rememberNonce(auditLogger: AuditLogger, nonce: string): void {
+  auditLogger.recordNonce(nonce);
+  auditLogger.cleanupNonces(NONCE_RETENTION_SECONDS);
+}
+
 /**
  * コア判定ループ
  *
@@ -186,8 +230,7 @@ export async function evaluate(
 
     // 4.6 delegation max_uses チェック
     if (delegation.max_uses !== undefined) {
-      const usageKey = `delegation:${tokenHash}`;
-      const currentCount = opts.auditLogger.getUsageCount(usageKey);
+      const currentCount = opts.auditLogger.getUsageCount(delegationUsageKey(delegation));
       if (currentCount >= delegation.max_uses) {
         return makeDecision(reqHash, false, `Delegation token max_uses exceeded (${delegation.max_uses})`, "policy", userKey);
       }
@@ -209,30 +252,15 @@ export async function evaluate(
   }
 
   if (matchResult === "allow") {
-    // credential max_uses チェック
-    if (request.action === "use_credential" && opts?.auditLogger && scope.credentials) {
-      const credRule = scope.credentials[request.target];
-      if (credRule?.max_uses !== undefined) {
-        const credKey = `credential:${request.target}`;
-        const currentCount = opts.auditLogger.getUsageCount(credKey);
-        if (currentCount >= credRule.max_uses) {
-          return makeDecision(reqHash, false, `Credential max_uses exceeded for ${request.target} (${credRule.max_uses})`, "policy", userKey);
-        }
-        opts.auditLogger.incrementUsage(credKey);
+    if (opts?.auditLogger) {
+      // credential / delegation の max_uses を確認と同時に消費する
+      const exceeded = spendUses(opts.auditLogger, request, delegation, scope);
+      if (exceeded !== null) {
+        return makeDecision(reqHash, false, exceeded, "policy", userKey);
       }
-    }
-
-    // delegation token 使用カウントをインクリメント
-    if (opts?.auditLogger && delegation.max_uses !== undefined) {
-      const tokenHash = createHash("sha256")
-        .update(delegation.signature)
-        .digest("hex");
-      opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
-    }
-
-    // Nonceを使用済みとして記録
-    if (request.nonce && opts?.auditLogger) {
-      opts.auditLogger.recordNonce(request.nonce);
+      if (request.nonce) {
+        rememberNonce(opts.auditLogger, request.nonce);
+      }
     }
 
     return makeDecision(reqHash, true, `Allowed by policy: ${request.action} on ${request.target}`, "policy", userKey);
@@ -254,24 +282,15 @@ export async function evaluate(
 
       const approved = await opts.onAsk(request);
       if (approved) {
-        // 承認時に使用カウントをインクリメント
         if (opts.auditLogger) {
-          if (request.action === "use_credential" && scope.credentials) {
-            const credRule = scope.credentials[request.target];
-            if (credRule?.max_uses !== undefined) {
-              opts.auditLogger.incrementUsage(`credential:${request.target}`);
-            }
+          // 承認待ちのあいだに別の判定が残り回数を使い切っていることがある。承認後に確認と消費をやり直す
+          const exceeded = spendUses(opts.auditLogger, request, delegation, scope);
+          if (exceeded !== null) {
+            return makeDecision(reqHash, false, exceeded, "policy", userKey);
           }
-          if (delegation.max_uses !== undefined) {
-            const tokenHash = createHash("sha256")
-              .update(delegation.signature)
-              .digest("hex");
-            opts.auditLogger.incrementUsage(`delegation:${tokenHash}`);
+          if (request.nonce) {
+            rememberNonce(opts.auditLogger, request.nonce);
           }
-        }
-        // Nonceを使用済みとして記録
-        if (request.nonce && opts?.auditLogger) {
-          opts.auditLogger.recordNonce(request.nonce);
         }
 
         return makeDecision(reqHash, true, `Approved by user: ${request.action} on ${request.target}`, "user", userKey);

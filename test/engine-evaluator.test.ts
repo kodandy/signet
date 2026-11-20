@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import Database from "better-sqlite3";
 import { generateKeyPair, encodeBase64, sign } from "../src/crypto/keys";
 import { createDelegation } from "../src/crypto/delegation";
 import type { Scope } from "../src/policy/scope";
@@ -584,6 +585,107 @@ describe("engine/evaluator", () => {
 
       // Different auto-generated nonces
       expect(req1.nonce).not.toBe(req2.nonce);
+    });
+
+    test("drops nonces too old to be replayed and keeps recent ones", async () => {
+      const dbPath = join(testDir, "nonce-cleanup.db");
+      logger = new AuditLogger(dbPath);
+      const seed = new Database(dbPath);
+      const insert = seed.prepare("INSERT INTO used_nonces (nonce, used_at) VALUES (?, ?)");
+      insert.run("nonce-one-hour-old", new Date(Date.now() - 3_600_000).toISOString());
+      insert.run("nonce-five-minutes-old", new Date(Date.now() - 300_000).toISOString());
+      seed.close();
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+
+      const decision = await evaluate(request, delegation, testScope, userKey, { auditLogger: logger });
+
+      expect(decision.allowed).toBe(true);
+      expect(logger.isNonceUsed("nonce-one-hour-old")).toBe(false);
+      expect(logger.isNonceUsed("nonce-five-minutes-old")).toBe(true);
+      expect(logger.isNonceUsed(request.nonce as string)).toBe(true);
+    });
+  });
+
+  describe("max_uses under concurrent approvals", () => {
+    const testDir = join(tmpdir(), `signet-engine-maxuses-race-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("a delegation token with max_uses 1 allows only one of two approvals pending at once", async () => {
+      logger = new AuditLogger(join(testDir, "delegation.db"));
+      const singleUse = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 1,
+      });
+      const tokenHash = createHash("sha256").update(singleUse.signature).digest("hex");
+      const reqA = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "git push origin a");
+      const reqB = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "git push origin b");
+      const approveLater = () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20));
+
+      const decisions = await Promise.all([
+        evaluate(reqA, singleUse, testScope, userKey, { auditLogger: logger, onAsk: approveLater }),
+        evaluate(reqB, singleUse, testScope, userKey, { auditLogger: logger, onAsk: approveLater }),
+      ]);
+
+      expect(decisions.map((d) => d.allowed).sort()).toEqual([false, true]);
+      expect(decisions.find((d) => !d.allowed)?.reason).toContain("max_uses exceeded");
+      expect(logger.getUsageCount(`delegation:${tokenHash}`)).toBe(1);
+    });
+
+    test("a credential with max_uses 1 allows only one of two approvals pending at once", async () => {
+      logger = new AuditLogger(join(testDir, "credential.db"));
+      const scope: Scope = {
+        ...testScope,
+        credentials: {
+          deploy_key: { allowed_actions: ["*"], max_uses: 1, require_approval: true },
+        },
+      };
+      const credDelegation = createDelegation(userKey, agentPubKey, scope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+      });
+      const reqA = makeSignedRequest(agentKey.secretKey, agentPubKey, "use_credential", "deploy_key", "deploy a");
+      const reqB = makeSignedRequest(agentKey.secretKey, agentPubKey, "use_credential", "deploy_key", "deploy b");
+      const approveLater = () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20));
+
+      const decisions = await Promise.all([
+        evaluate(reqA, credDelegation, scope, userKey, { auditLogger: logger, onAsk: approveLater }),
+        evaluate(reqB, credDelegation, scope, userKey, { auditLogger: logger, onAsk: approveLater }),
+      ]);
+
+      expect(decisions.map((d) => d.allowed).sort()).toEqual([false, true]);
+      expect(decisions.find((d) => !d.allowed)?.reason).toContain("Credential max_uses exceeded");
+      expect(logger.getUsageCount("credential:deploy_key")).toBe(1);
+    });
+
+    test("a refused delegation use does not spend a credential use", async () => {
+      logger = new AuditLogger(join(testDir, "both.db"));
+      const scope: Scope = {
+        ...testScope,
+        credentials: {
+          deploy_key: { allowed_actions: ["*"], max_uses: 5, require_approval: true },
+        },
+      };
+      const singleUse = createDelegation(userKey, agentPubKey, scope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 1,
+      });
+      const reqA = makeSignedRequest(agentKey.secretKey, agentPubKey, "use_credential", "deploy_key", "deploy a");
+      const reqB = makeSignedRequest(agentKey.secretKey, agentPubKey, "use_credential", "deploy_key", "deploy b");
+      const approveLater = () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20));
+
+      const decisions = await Promise.all([
+        evaluate(reqA, singleUse, scope, userKey, { auditLogger: logger, onAsk: approveLater }),
+        evaluate(reqB, singleUse, scope, userKey, { auditLogger: logger, onAsk: approveLater }),
+      ]);
+
+      expect(decisions.map((d) => d.allowed).sort()).toEqual([false, true]);
+      expect(logger.getUsageCount("credential:deploy_key")).toBe(1);
     });
   });
 });
