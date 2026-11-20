@@ -14,7 +14,7 @@ I built **signet** to fix this.
 - Agents get their own Ed25519 keypair (separate identity, like SSH)
 - You define what they can do in a YAML policy: which commands, which files, which credentials, for how long
 - Credentials are encrypted and vaulted — agents never see raw tokens. signet injects them per-command when policy allows
-- Every action is cryptographically signed. Tamper-proof audit log
+- Every action request that goes through signet is cryptographically signed. Tamper-evident audit log (detects accidental corruption and simple edits, not a full rewrite by a process running as your own user)
 
 **30-second setup:**
 

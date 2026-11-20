@@ -26,7 +26,7 @@ signet sits between a user and their AI agent. It provides:
 - **Cryptographic delegation**: Ed25519 keypairs for agents, signed tokens defining what they can do
 - **Scoped authorization**: filesystem, network, shell, credential access with glob patterns
 - **Credential isolation**: .env files encrypted and vaulted, injected per-command only when policy allows
-- **Tamper-proof audit trail**: chain-hashed SQLite log of every request and decision
+- **Tamper-evident audit trail**: chain-hashed SQLite log of the requests and decisions that pass through signet (detects accidental corruption and simple edits; a same-user process that can write to `~/.signet/` can recompute the chain)
 
 It answers: **"Is this agent authorized to do this?"**
 
@@ -40,7 +40,7 @@ It answers: **"Is this agent authorized to do this?"**
 | Scope | MCP tool calls | Shell, filesystem, network, credentials |
 | Trust model | Blocklist (detect+block known threats) | Allowlist + signed delegation tokens |
 | Credentials | Not handled | AES-256-GCM vault with per-command injection |
-| Audit | Logs blocked actions | Chain-hashed log of all decisions (signed, tamper-proof) |
+| Audit | Logs blocked actions | Chain-hashed log of signet's decisions (signed, tamper-evident) |
 | Setup | SDK integration | `npm install -g ai-signet && signet init` |
 | Language | TypeScript | TypeScript |
 

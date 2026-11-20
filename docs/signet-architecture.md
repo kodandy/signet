@@ -258,7 +258,7 @@ function injectForCommand(credName: string, command: string): ChildProcess;
 
 // SQLite に全操作を記録
 // 各レコード: request JSON + request署名 + decision JSON + decision署名
-// → 改竄不可能な監査証跡
+// → 改竄を検知できる（tamper-evident）監査証跡。改竄不可能（tamper-proof）ではない
 
 interface AuditEntry {
   id: number;
@@ -268,7 +268,8 @@ interface AuditEntry {
 }
 
 // チェーンハッシュ: 各エントリが前エントリのハッシュを含む
-// → ログの挿入・削除・改竄が検出可能
+// → 後続ハッシュを再計算しない挿入・途中削除・改竄は検出可能
+//   （同一UIDで ~/.signet に書ける攻撃者による全体再計算と、末尾の切り詰めは検出できない）
 
 function log(request: ActionRequest, decision: ActionDecision): void;
 function verify(): { valid: boolean; errors: string[] };
@@ -457,7 +458,13 @@ activate() 実行後の状態:
 #### T5: ログ改竄 — 事後的に操作履歴を書き換え
 
 - 対策: チェーンハッシュ + 双方署名（エージェント署名 + ユーザー署名）
-- 各エントリが前エントリのハッシュを含むため、挿入・削除・改竄を検出可能
+- 各エントリが前エントリのハッシュを含むため、後続ハッシュを再計算しない挿入・途中削除・改竄（事故による破損、単純な編集）を検出可能
+- **検出できないもの（残存リスク）**:
+  - 同一UIDで `~/.signet/` に書ける攻撃者（injectionされたエージェントが任意コマンドを実行できる場合を含む）は、先頭からチェーン全体を再計算できる。鍵・トークン・監査DBが同じ `~/.signet/` 配下にあるため、`signet log --verify` はこれを検知しない
+  - 末尾エントリの削除（切り詰め）とログ全体の削除。最新ハッシュや件数をDBの外に記録していない
+  - signetを経由しない行動。PATHラッパーは迂回可能で、ログは全行動の記録を保証しない
+  - `signet log --verify` はチェーンハッシュのみを検証し、エントリ内の署名は再検証しない
+- 独立した外部checkpoint（エージェントが書けない場所への最新 `chain_hash` の退避）が無い限り、保証はここまで。tamper-proof ではなく tamper-evident と表記する
 
 #### T6: エージェント偽装 — 別のエージェントが権限を利用
 

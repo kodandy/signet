@@ -19,7 +19,7 @@ This means:
 1. Every agent gets its own keypair
 2. User issues signed delegation tokens defining what the agent can do
 3. Every action request is signed by the agent, every approval is signed by the user
-4. Tamper-proof audit trail via chain hashing
+4. Tamper-evident audit trail via chain hashing (detects accidental corruption and simple edits; not a same-UID attacker who can write to `~/.signet/` and recompute the whole chain, and not actions that bypass signet — see README "What the audit log does and does not guarantee")
 
 ## Key design decisions
 
