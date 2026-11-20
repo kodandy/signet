@@ -2,6 +2,7 @@ import { describe, test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parsePolicy } from "../src/policy/parser";
+import { matchShell } from "../src/policy/matcher";
 
 const templatesDir = join(__dirname, "..", "templates");
 
@@ -26,6 +27,14 @@ describe("templates", () => {
     expect(config.scope.credentials?.npm_token).toBeDefined();
     expect(config.scope.credentials?.npm_token.require_approval).toBe(true);
     expect(config.scope.network?.allow).toContain("registry.npmjs.org");
+  });
+
+  test("node template allows npm test with and without arguments", () => {
+    const content = readFileSync(join(templatesDir, "node.yml"), "utf-8");
+    const config = parsePolicy(content);
+
+    expect(matchShell(config.scope.shell, "npm test")).toBe("allow");
+    expect(matchShell(config.scope.shell, "npm test -- --watch")).toBe("allow");
   });
 
   test("python template has pypi-specific rules", () => {

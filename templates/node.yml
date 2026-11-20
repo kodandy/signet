@@ -47,6 +47,8 @@ scope:
 
   shell:
     allow:
+      # "npm test *" は引数付きにしか一致しない。引数なしは別の行で許可する
+      - "npm test"
       - "npm test *"
       - "npm run *"
       - "npx *"
