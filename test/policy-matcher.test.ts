@@ -222,6 +222,17 @@ describe("policy/matcher", () => {
       expect(matchCredential(creds, "unknown_key", "action")).toBe("deny");
     });
 
+    test.each(["__proto__", "constructor", "toString", "hasOwnProperty"])(
+      "denies %s, a name every object inherits but the policy does not define",
+      (inheritedName) => {
+        const result = matchCredential(creds, inheritedName, "action");
+        const detailed = matchCredentialDetailed(creds, inheritedName, "action");
+
+        expect(result).toBe("deny");
+        expect(detailed.result).toBe("deny");
+      },
+    );
+
     test("returns no_match when scope is undefined", () => {
       expect(matchCredential(undefined, "github_token")).toBe("no_match");
     });

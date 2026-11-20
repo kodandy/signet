@@ -176,6 +176,14 @@ function commandGlobToRegex(pattern: string): RegExp {
 }
 
 /**
+ * ポリシーに書かれたクレデンシャルの規則だけを返す。
+ * そのまま添字で引くと constructor や __proto__ のような継承プロパティが規則として返る。
+ */
+function ownCredentialRule(scope: NonNullable<Scope["credentials"]>, credName: string) {
+  return Object.prototype.hasOwnProperty.call(scope, credName) ? scope[credName] : undefined;
+}
+
+/**
  * クレデンシャル使用のマッチング。
  */
 export function matchCredential(
@@ -185,7 +193,7 @@ export function matchCredential(
 ): MatchResult {
   if (!scope) return "no_match";
 
-  const rule = scope[credName];
+  const rule = ownCredentialRule(scope, credName);
   if (!rule) return "deny";
 
   // allowed_actionsが定義されていてアクション指定がある場合（空配列は全拒否）
@@ -254,7 +262,7 @@ export function matchNetworkDetailed(scope: Scope["network"], domain: string): M
 
 export function matchCredentialDetailed(scope: Scope["credentials"], credName: string, action?: string): MatchDetail {
   if (!scope) return { result: "no_match" };
-  const rule = scope[credName];
+  const rule = ownCredentialRule(scope, credName);
   if (!rule) return { result: "deny", matchedIn: "not defined" };
   if (action && rule.allowed_actions) {
     const actionMatch = rule.allowed_actions.find((p) => globMatch(p, action));
