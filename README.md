@@ -90,7 +90,7 @@ signet check "git push origin main"
 # ❓ shell: "git push origin main" → ask
 
 signet check "npm test"
-# ➖ shell: "npm test" → no_match
+# ❌ shell: "npm test" → deny  (no matching rule — denied by default)
 
 # Activate vault protection
 signet activate
@@ -247,6 +247,15 @@ The adversarial test suite (`test/security-edge-cases.test.ts`) exercises, among
 Be honest about what a trust layer is not:
 
 - **Not an OS sandbox.** Enforcement is cooperative (PATH wrappers, editor settings). An agent with unrestricted shell access could bypass wrappers — pair signet with OS-level sandboxing (containers, macOS Seatbelt) when you need containment. signet's contribution is *accountability*, not *confinement*.
+- **Shell rules match text, not arguments.** A shell pattern is a glob over the whole command line joined with single spaces; `*` matches any characters, including spaces. signet does not parse flags or normalize spelling, so a `deny` or `ask` rule stops only the spellings it literally matches:
+
+  | Rule | Matches | Does not match |
+  |---|---|---|
+  | `deny: "rm -rf *"` | `rm -rf /x` | `rm -r -f /x`, `rm -fr /x`, `rm -rf` (no argument), `rm  -rf /x` (two spaces) |
+  | `ask: "git push *"` | `git push origin main` | `git push` |
+  | `allow: "npm test *"` | `npm test -- --watch` | `npm test` |
+
+  A command that misses a `deny` or `ask` rule is then checked against `allow`, so a broad rule such as `allow: "rm *"` lets the other spellings through. A trailing ` *` requires at least a space after the preceding word; list the bare command as its own rule if you need it. Keep `allow` rules narrow and rely on the default (no matching rule → deny) rather than on `deny` rules to block a dangerous command.
 - **Local, single-user trust model.** Your keypair is the root of trust; there is no remote IdP or OIDC federation.
 - **A compromised host is out of scope.** If the attacker already owns your user account, no local tool saves you.
 
