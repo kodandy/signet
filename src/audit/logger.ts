@@ -356,6 +356,17 @@ export class AuditLogger {
   }
 
   /**
+   * nonceを使用済みとして記録し、この呼び出しが最初の記録だったかを返す。
+   * 確認と記録を1文で行うので、同じnonceを同時に持ち込まれても通るのは1つだけ。
+   */
+  claimNonce(nonce: string): boolean {
+    const result = this.db.prepare(
+      "INSERT OR IGNORE INTO used_nonces (nonce, used_at) VALUES (?, ?)",
+    ).run(nonce, new Date().toISOString());
+    return result.changes === 1;
+  }
+
+  /**
    * 古いnonce記録をクリーンアップ（指定秒数より古いものを削除）
    */
   cleanupNonces(maxAgeSeconds: number = 600): void {

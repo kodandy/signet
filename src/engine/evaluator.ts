@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { type KeyPair, sign, verify, encodeBase64, decodeBase64 } from "../crypto/keys";
+import { type KeyPair, sign, verify, encodeBase64, decodeBase64, isCanonicalSignature } from "../crypto/keys";
 import { type DelegationToken, verifyDelegation } from "../crypto/delegation";
 import type { Scope } from "../policy/scope";
 import {
@@ -111,6 +111,8 @@ export function signActionRequest(
   return { ...withNonce, signature: encodeBase64(sig) };
 }
 
+const DUPLICATE_NONCE_REASON = "Duplicate nonce: possible replay attack";
+
 function delegationUsageKey(delegation: DelegationToken): string {
   const tokenHash = createHash("sha256").update(delegation.signature).digest("hex");
   return `delegation:${tokenHash}`;
@@ -146,9 +148,14 @@ function spendUses(
     : `Delegation token max_uses exceeded (${delegation.max_uses})`;
 }
 
-function rememberNonce(auditLogger: AuditLogger, nonce: string): void {
-  auditLogger.recordNonce(nonce);
+/**
+ * nonce を使用済みにする。すでに使われていれば false。
+ * 冒頭の重複チェックと判定のあいだに同じリクエストが通ることがあるので、許可の直前にここで確定させる。
+ */
+function claimNonce(auditLogger: AuditLogger, nonce: string): boolean {
+  const claimed = auditLogger.claimNonce(nonce);
   auditLogger.cleanupNonces(NONCE_RETENTION_SECONDS);
+  return claimed;
 }
 
 /**
@@ -185,7 +192,7 @@ export async function evaluate(
   // 0.5 Nonce重複チェック（リプレイ攻撃防止）
   if (request.nonce && opts?.auditLogger) {
     if (opts.auditLogger.isNonceUsed(request.nonce)) {
-      return makeDecision(reqHash, false, "Duplicate nonce: possible replay attack", "policy", userKey);
+      return makeDecision(reqHash, false, DUPLICATE_NONCE_REASON, "policy", userKey);
     }
   }
 
@@ -210,6 +217,11 @@ export async function evaluate(
   const userPubKeyB64 = encodeBase64(userKey.publicKey);
   if (!verifyDelegation(delegation, userPubKeyB64)) {
     return makeDecision(reqHash, false, "Invalid delegation token signature", "policy", userKey);
+  }
+
+  // 3.5 署名の書き方が一通りでないトークンは拒否する。失効と max_uses は署名文字列のハッシュで引くため
+  if (!isCanonicalSignature(delegation.signature)) {
+    return makeDecision(reqHash, false, "Delegation token signature is not in canonical form", "policy", userKey);
   }
 
   // 4. 有効期限チェック
@@ -253,13 +265,13 @@ export async function evaluate(
 
   if (matchResult === "allow") {
     if (opts?.auditLogger) {
+      if (request.nonce && !claimNonce(opts.auditLogger, request.nonce)) {
+        return makeDecision(reqHash, false, DUPLICATE_NONCE_REASON, "policy", userKey);
+      }
       // credential / delegation の max_uses を確認と同時に消費する
       const exceeded = spendUses(opts.auditLogger, request, delegation, scope);
       if (exceeded !== null) {
         return makeDecision(reqHash, false, exceeded, "policy", userKey);
-      }
-      if (request.nonce) {
-        rememberNonce(opts.auditLogger, request.nonce);
       }
     }
 
@@ -283,13 +295,13 @@ export async function evaluate(
       const approved = await opts.onAsk(request);
       if (approved) {
         if (opts.auditLogger) {
-          // 承認待ちのあいだに別の判定が残り回数を使い切っていることがある。承認後に確認と消費をやり直す
+          // 承認待ちのあいだに同じリクエストが通っていること、別の判定が残り回数を使い切っていることがある
+          if (request.nonce && !claimNonce(opts.auditLogger, request.nonce)) {
+            return makeDecision(reqHash, false, DUPLICATE_NONCE_REASON, "policy", userKey);
+          }
           const exceeded = spendUses(opts.auditLogger, request, delegation, scope);
           if (exceeded !== null) {
             return makeDecision(reqHash, false, exceeded, "policy", userKey);
-          }
-          if (request.nonce) {
-            rememberNonce(opts.auditLogger, request.nonce);
           }
         }
 
