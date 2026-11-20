@@ -41,6 +41,9 @@ function computeChainHash(
   return createHash("sha256").update(payload).digest("hex");
 }
 
+/** consumeUsage がトランザクションを巻き戻すための内部シグナル */
+class UsageLimitReached extends Error {}
+
 export class AuditLogger {
   private db: Database.Database;
 
@@ -268,6 +271,31 @@ export class AuditLogger {
       "SELECT count FROM usage_counter WHERE key = ?",
     ).get(key) as { count: number };
     return row.count;
+  }
+
+  /**
+   * 上限に達していないキーだけを 1 回分数える。全キーが上限未満なら全部を数えて null を返し、
+   * どれか 1 つでも上限に達していれば何も数えず、そのキーを返す。
+   * 確認と加算を 1 つの書き込みトランザクションにまとめ、並行する判定が同じ残り 1 回を取り合えないようにする。
+   */
+  consumeUsage(limits: ReadonlyArray<{ key: string; max: number }>): string | null {
+    const countIfUnder = this.db.prepare(
+      "INSERT INTO usage_counter (key, count) VALUES (?, 1) ON CONFLICT(key) DO UPDATE SET count = count + 1 WHERE count < ?",
+    );
+    let refusedKey: string | null = null;
+    try {
+      this.db.transaction(() => {
+        for (const { key, max } of limits) {
+          if (!Number.isInteger(max) || max < 1 || countIfUnder.run(key, max).changes !== 1) {
+            refusedKey = key;
+            throw new UsageLimitReached();
+          }
+        }
+      }).immediate();
+    } catch (err) {
+      if (!(err instanceof UsageLimitReached)) throw err;
+    }
+    return refusedKey;
   }
 
   /**

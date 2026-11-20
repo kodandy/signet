@@ -258,6 +258,56 @@ describe("audit/logger", () => {
       expect(logger.getUsageCount("key:a")).toBe(2);
       expect(logger.getUsageCount("key:b")).toBe(1);
     });
+
+    test("consumeUsage counts a use while the key is under its limit", () => {
+      const first = logger.consumeUsage([{ key: "limit:a", max: 2 }]);
+      const second = logger.consumeUsage([{ key: "limit:a", max: 2 }]);
+
+      expect(first).toBeNull();
+      expect(second).toBeNull();
+      expect(logger.getUsageCount("limit:a")).toBe(2);
+    });
+
+    test("consumeUsage names the key at its limit and leaves the count unchanged", () => {
+      logger.consumeUsage([{ key: "limit:b", max: 1 }]);
+
+      const refused = logger.consumeUsage([{ key: "limit:b", max: 1 }]);
+
+      expect(refused).toBe("limit:b");
+      expect(logger.getUsageCount("limit:b")).toBe(1);
+    });
+
+    test("consumeUsage refuses a limit of zero without creating a count", () => {
+      const refused = logger.consumeUsage([{ key: "limit:zero", max: 0 }]);
+
+      expect(refused).toBe("limit:zero");
+      expect(logger.getUsageCount("limit:zero")).toBe(0);
+    });
+
+    test.each([
+      ["NaN", Number.NaN],
+      ["Infinity", Number.POSITIVE_INFINITY],
+      ["a fraction", 1.5],
+      ["a string", "abc" as unknown as number],
+    ])("consumeUsage refuses a limit that is %s without creating a count", (_label, max) => {
+      const refused = logger.consumeUsage([{ key: "limit:odd", max }]);
+
+      expect(refused).toBe("limit:odd");
+      expect(logger.getUsageCount("limit:odd")).toBe(0);
+    });
+
+    test("consumeUsage counts nothing when any one key is at its limit", () => {
+      logger.consumeUsage([{ key: "limit:full", max: 1 }]);
+
+      const refused = logger.consumeUsage([
+        { key: "limit:open", max: 5 },
+        { key: "limit:full", max: 1 },
+      ]);
+
+      expect(refused).toBe("limit:full");
+      expect(logger.getUsageCount("limit:open")).toBe(0);
+      expect(logger.getUsageCount("limit:full")).toBe(1);
+    });
   });
 
   describe("token revocation", () => {
