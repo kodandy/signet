@@ -440,6 +440,38 @@ describe("generic wrapper (end to end)", () => {
     expect(stdout).not.toContain("RAN:");
     expect(readAudit().entries.length).toBe(0);
   });
+
+  function runWrappedBounded(path: string, args: string[]) {
+    const r = spawnSync("fakecmd", args, {
+      cwd: TEST_DIR,
+      env: { ...process.env, HOME: TEST_DIR, PATH: path, SIGNET_AGENT: "bot", SIGNET_TOKEN: TOKEN_PATH },
+      encoding: "utf-8",
+      timeout: 8000,
+    });
+    return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", exitCode: r.status };
+  }
+
+  test("the wrapper does not run itself when its directory is the last PATH entry", () => {
+    setupWrapper(true);
+    const path = `${shimDir}:${nodeBin}:/usr/bin:/bin:${binDir}`;
+
+    const { stderr, exitCode } = runWrappedBounded(path, ["hello"]);
+
+    expect(exitCode).toBe(127);
+    expect(stderr).toContain("original 'fakecmd' not found");
+    expect(readAudit().entries.length).toBe(0);
+  }, 30000);
+
+  test("the real command runs once when the wrapper directory is on PATH with a trailing slash", () => {
+    setupWrapper(true);
+    const path = `${binDir}/:${shimDir}:${realDir}:${nodeBin}:/usr/bin:/bin`;
+
+    const { stdout, exitCode } = runWrappedBounded(path, ["hello"]);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("RAN:hello");
+    expect(readAudit().entries.length).toBe(1);
+  }, 30000);
 });
 
 describe("generic wrapper", () => {

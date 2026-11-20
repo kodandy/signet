@@ -50,7 +50,24 @@ function generateWrapperScript(cmdName: string): string {
 # signet wrapper for ${cmdName}
 # Intercepts command execution for policy checking
 
-ORIGINAL=$(PATH=$(echo "$PATH" | sed "s|$HOME/.signet/bin:||g") which ${cmdName} 2>/dev/null)
+# Look the real command up on PATH without this wrapper's own directory. Entries are
+# compared as files (-ef), so a trailing slash or a symlinked spelling is still removed.
+SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+CLEAN_PATH=""
+IFS=':' read -r -a PATH_ENTRIES <<< "$PATH"
+for ENTRY in "\${PATH_ENTRIES[@]}"; do
+  if [ -z "$ENTRY" ] || [ "$ENTRY" -ef "$SELF_DIR" ]; then
+    continue
+  fi
+  CLEAN_PATH="\${CLEAN_PATH:+$CLEAN_PATH:}$ENTRY"
+done
+
+ORIGINAL=$(PATH="$CLEAN_PATH" which ${cmdName} 2>/dev/null)
+
+# Never exec this wrapper again: that would evaluate and log the same command in a loop.
+if [ -n "$ORIGINAL" ] && [ "$ORIGINAL" -ef "$0" ]; then
+  ORIGINAL=""
+fi
 
 if [ -z "$ORIGINAL" ]; then
   echo "signet: original '${cmdName}' not found in PATH" >&2
