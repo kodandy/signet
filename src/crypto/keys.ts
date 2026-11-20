@@ -44,6 +44,28 @@ export function decodeBase64(str: string): Uint8Array {
   return new Uint8Array(Buffer.from(str, "base64"));
 }
 
+// Ed25519 の群位数 L（リトルエンディアン）
+const ED25519_GROUP_ORDER_LE = Uint8Array.from([
+  0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+]);
+
+/**
+ * 署名の書き方が一通りに決まる形かどうか。
+ * decodeBase64 は空白やパディング欠けを読み飛ばし、tweetnacl は S に L を足した署名も受理する。
+ * 同じ署名を別の文字列で書けると、署名文字列のハッシュをキーにした失効・使用回数を回避できる。
+ */
+export function isCanonicalSignature(signature: string): boolean {
+  const bytes = decodeBase64(signature);
+  if (bytes.length !== 64 || encodeBase64(bytes) !== signature) return false;
+  for (let i = 31; i >= 0; i--) {
+    const s = bytes[32 + i];
+    const l = ED25519_GROUP_ORDER_LE[i];
+    if (s !== l) return s < l;
+  }
+  return false;
+}
+
 export function saveKeyPair(keyPair: KeyPair, path: string = USER_KEY_PATH): void {
   const dir = dirname(path);
   if (!existsSync(dir)) {

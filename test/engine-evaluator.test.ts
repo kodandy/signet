@@ -4,7 +4,7 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
-import { generateKeyPair, encodeBase64, sign } from "../src/crypto/keys";
+import { generateKeyPair, encodeBase64, decodeBase64, sign } from "../src/crypto/keys";
 import { createDelegation } from "../src/crypto/delegation";
 import type { Scope } from "../src/policy/scope";
 import {
@@ -686,6 +686,127 @@ describe("engine/evaluator", () => {
 
       expect(decisions.map((d) => d.allowed).sort()).toEqual([false, true]);
       expect(logger.getUsageCount("credential:deploy_key")).toBe(1);
+    });
+  });
+
+  describe("delegation signature respelled", () => {
+    const testDir = join(tmpdir(), `signet-engine-respell-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    // Ed25519 の群位数 L（リトルエンディアン）。S に L を足した署名も tweetnacl は受理する
+    const GROUP_ORDER_LE = [
+      0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+    ];
+
+    function addGroupOrderToS(signature: string): string {
+      const bytes = decodeBase64(signature);
+      let carry = 0;
+      for (let i = 0; i < 32; i++) {
+        const sum = bytes[32 + i] + GROUP_ORDER_LE[i] + carry;
+        bytes[32 + i] = sum & 0xff;
+        carry = sum >> 8;
+      }
+      return encodeBase64(bytes);
+    }
+
+    function singleUseToken() {
+      return createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 1,
+      });
+    }
+
+    test.each([
+      ["a trailing space", (sig: string) => `${sig} `],
+      ["a trailing newline", (sig: string) => `${sig}\n`],
+      ["its padding removed", (sig: string) => sig.replace(/=+$/, "")],
+      ["the group order added to S", addGroupOrderToS],
+    ])("a used-up token is still refused when its signature has %s", async (_label, respell) => {
+      logger = new AuditLogger(join(testDir, "max-uses.db"));
+      const token = singleUseToken();
+      const first = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      const second = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+      await evaluate(first, token, testScope, userKey, { auditLogger: logger });
+
+      const decision = await evaluate(
+        second,
+        { ...token, signature: respell(token.signature) },
+        testScope,
+        userKey,
+        { auditLogger: logger },
+      );
+
+      expect(decision.allowed).toBe(false);
+    });
+
+    test("a revoked token is still refused when its signature has a trailing newline", async () => {
+      logger = new AuditLogger(join(testDir, "revoked.db"));
+      logger.revokeToken(createHash("sha256").update(delegation.signature).digest("hex"), "test");
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "npm test");
+
+      const decision = await evaluate(
+        request,
+        { ...delegation, signature: `${delegation.signature}\n` },
+        testScope,
+        userKey,
+        { auditLogger: logger },
+      );
+
+      expect(decision.allowed).toBe(false);
+    });
+  });
+
+  describe("the same request evaluated at once", () => {
+    const testDir = join(tmpdir(), `signet-engine-nonce-race-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    let logger: AuditLogger;
+
+    afterEach(() => {
+      logger?.close();
+      if (existsSync(testDir)) {
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    test("only one of five pending approvals of one signed request is allowed", async () => {
+      logger = new AuditLogger(join(testDir, "nonce.db"));
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "git push origin main");
+      const approveLater = () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20));
+
+      const decisions = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          evaluate(request, delegation, testScope, userKey, { auditLogger: logger, onAsk: approveLater }),
+        ),
+      );
+
+      expect(decisions.filter((d) => d.allowed).length).toBe(1);
+      expect(decisions.filter((d) => d.reason.includes("Duplicate nonce")).length).toBe(4);
+    });
+
+    test("a replayed request does not spend a use of the token", async () => {
+      logger = new AuditLogger(join(testDir, "replay-use.db"));
+      const token = createDelegation(userKey, agentPubKey, testScope, {
+        expires_at: "2099-12-31T23:59:59.000Z",
+        max_uses: 3,
+      });
+      const tokenHash = createHash("sha256").update(token.signature).digest("hex");
+      const request = makeSignedRequest(agentKey.secretKey, agentPubKey, "shell", "git push origin main");
+      const approveLater = () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20));
+
+      await Promise.all(
+        Array.from({ length: 3 }, () =>
+          evaluate(request, token, testScope, userKey, { auditLogger: logger, onAsk: approveLater }),
+        ),
+      );
+
+      expect(logger.getUsageCount(`delegation:${tokenHash}`)).toBe(1);
     });
   });
 });

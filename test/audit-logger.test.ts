@@ -310,6 +310,17 @@ describe("audit/logger", () => {
     });
   });
 
+  describe("nonce claim", () => {
+    test("claimNonce succeeds once and fails for the same nonce afterwards", () => {
+      const first = logger.claimNonce("nonce-1");
+      const second = logger.claimNonce("nonce-1");
+
+      expect(first).toBe(true);
+      expect(second).toBe(false);
+      expect(logger.isNonceUsed("nonce-1")).toBe(true);
+    });
+  });
+
   describe("token revocation", () => {
     test("revokeToken and isTokenRevoked", () => {
       const hash = "a".repeat(64);
