@@ -286,7 +286,7 @@ export class AuditLogger {
     try {
       this.db.transaction(() => {
         for (const { key, max } of limits) {
-          if (max < 1 || countIfUnder.run(key, max).changes !== 1) {
+          if (!Number.isInteger(max) || max < 1 || countIfUnder.run(key, max).changes !== 1) {
             refusedKey = key;
             throw new UsageLimitReached();
           }

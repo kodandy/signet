@@ -284,6 +284,18 @@ describe("audit/logger", () => {
       expect(logger.getUsageCount("limit:zero")).toBe(0);
     });
 
+    test.each([
+      ["NaN", Number.NaN],
+      ["Infinity", Number.POSITIVE_INFINITY],
+      ["a fraction", 1.5],
+      ["a string", "abc" as unknown as number],
+    ])("consumeUsage refuses a limit that is %s without creating a count", (_label, max) => {
+      const refused = logger.consumeUsage([{ key: "limit:odd", max }]);
+
+      expect(refused).toBe("limit:odd");
+      expect(logger.getUsageCount("limit:odd")).toBe(0);
+    });
+
     test("consumeUsage counts nothing when any one key is at its limit", () => {
       logger.consumeUsage([{ key: "limit:full", max: 1 }]);
 
