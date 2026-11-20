@@ -9,7 +9,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 import { generateKeyPair, saveKeyPair, loadKeyPair, encodeBase64, decodeBase64 } from "./crypto/keys";
-import { createDelegation } from "./crypto/delegation";
+import { createDelegation, type DelegationToken } from "./crypto/delegation";
+import { evaluate, signActionRequest, type ActionRequest, type ActionDecision } from "./engine/evaluator";
 import { parsePolicyFile } from "./policy/parser";
 import {
   matchShell, matchFilesystem, matchNetwork, matchCredential, type MatchResult,
@@ -341,6 +342,126 @@ program
       output += `  (${detail.matchedIn})`;
     }
     console.log(output);
+  });
+
+// ─── signet eval ───
+const EVAL_ACTIONS: Record<string, string> = {
+  shell: "shell",
+  fs_read: "fs_read",
+  fs_write: "fs_write",
+  network: "net_connect",
+  credential: "use_credential",
+};
+
+// Exit codes: 0 = allowed, 1 = denied, 2 = could not evaluate or could not record.
+function evalSetupError(message: string): never {
+  console.error(`Error: ${message}`);
+  process.exit(2);
+}
+
+program
+  .command("eval <target>")
+  .description("Evaluate a signed action request and record the decision in the audit log (Example: signet eval \"npm test\" --agent claude-code --token token.json)")
+  .option("-t, --type <type>", "Resource type: shell, fs_read, fs_write, network, credential (default: shell)")
+  .option("--purpose <purpose>", "Purpose string for credential checks")
+  .option("--agent <name>", "Agent key name under ~/.signet/agents (default: $SIGNET_AGENT)")
+  .option("--token <file>", "Delegation token file from 'signet delegate -o' (default: $SIGNET_TOKEN)")
+  .option("--context-hash <hash>", "Context hash to match against the token (default: $SIGNET_CONTEXT_HASH)")
+  .action(async (target: string, opts) => {
+    // Anything that ends this command without an explicit decision is "could not evaluate".
+    process.exitCode = 2;
+
+    const type: string = opts.type || "shell";
+    const action = Object.hasOwn(EVAL_ACTIONS, type) ? EVAL_ACTIONS[type] : undefined;
+    if (!action) {
+      evalSetupError(`Unknown type "${opts.type}". Use: shell, fs_read, fs_write, network, credential`);
+    }
+
+    const agentName: string | undefined = opts.agent || process.env.SIGNET_AGENT;
+    const tokenPath: string | undefined = opts.token || process.env.SIGNET_TOKEN;
+    if (!agentName) {
+      evalSetupError("No agent given. Pass --agent <name> or set SIGNET_AGENT (create one with 'signet keys generate <name>').");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(agentName)) {
+      evalSetupError(`Invalid agent name "${agentName}". Use letters, digits, "-" and "_".`);
+    }
+    if (!tokenPath) {
+      evalSetupError("No delegation token given. Pass --token <file> or set SIGNET_TOKEN (create one with 'signet delegate <pubkey> -o <file>').");
+    }
+
+    const userKeyPath = join(SIGNET_DIR, "user.key");
+    if (!existsSync(userKeyPath)) {
+      evalSetupError("User keypair not found. Run 'signet init' first.");
+    }
+    const agentKeyPath = join(SIGNET_DIR, "agents", `${agentName}.key`);
+    if (!existsSync(agentKeyPath)) {
+      evalSetupError(`Agent key not found: ${agentKeyPath}. Run 'signet keys generate ${agentName}'.`);
+    }
+
+    let token: DelegationToken;
+    try {
+      token = JSON.parse(readFileSync(tokenPath, "utf-8")) as DelegationToken;
+    } catch {
+      evalSetupError(`Cannot read delegation token: ${tokenPath}`);
+    }
+    if (
+      typeof token?.subject !== "string" ||
+      typeof token?.signature !== "string" ||
+      typeof token?.expires_at !== "string" ||
+      Number.isNaN(Date.parse(token.expires_at)) ||
+      typeof token?.scope !== "object" ||
+      token.scope === null
+    ) {
+      evalSetupError(`Malformed delegation token: ${tokenPath}`);
+    }
+
+    // evaluate() only compares context hashes when both sides have one, so a bound
+    // token must never reach it without the caller's hash.
+    const contextHash: string | undefined = opts.contextHash || process.env.SIGNET_CONTEXT_HASH;
+    if (token.context_hash && !contextHash) {
+      evalSetupError("This token is bound to a context. Pass --context-hash <hash> or set SIGNET_CONTEXT_HASH.");
+    }
+
+    let logger: AuditLogger;
+    let request: ActionRequest;
+    let decision: ActionDecision;
+    try {
+      const userKey = loadKeyPair(userKeyPath);
+      const agentKey = loadKeyPair(agentKeyPath);
+      logger = new AuditLogger();
+      request = signActionRequest(
+        {
+          agent_id: encodeBase64(agentKey.publicKey),
+          action,
+          target,
+          purpose: opts.purpose,
+          timestamp: new Date().toISOString(),
+        },
+        agentKey.secretKey,
+      );
+      // The policy is the scope the user signed into the token, not the signet.yml of
+      // whatever directory the caller is in. No onAsk handler: the caller is the agent,
+      // so an 'ask' rule is denied here rather than answered by the party being checked.
+      decision = await evaluate(request, token, token.scope, userKey, {
+        auditLogger: logger,
+        context_hash: contextHash,
+      });
+    } catch (err: unknown) {
+      // No err.message here: a JSON parse error can quote part of a key file.
+      evalSetupError("Evaluation failed: keys or audit log could not be loaded.");
+    }
+
+    // A decision that cannot be recorded must not be acted on.
+    try {
+      logger.log(request, decision);
+      logger.close();
+    } catch (err: unknown) {
+      evalSetupError(`Decision could not be written to the audit log: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const icon = decision.allowed ? "✅" : "❌";
+    console.log(`${icon} ${action}: "${target}" → ${decision.allowed ? "allow" : "deny"}  (${decision.reason})`);
+    process.exit(decision.allowed ? 0 : 1);
   });
 
 // ─── signet delegate ───
@@ -813,6 +934,9 @@ adaptCmd
     } else {
       console.log(`Generated wrappers: ${wrapped.join(", ")}`);
       console.log(`\nAdd to your shell profile:\n  ${generatePathSetup(binDir)}`);
+      console.log(`\nThe wrappers call 'signet eval' and block the command unless these are set:`);
+      console.log(`  export SIGNET_AGENT=<agent key name>     # signet keys generate <name>`);
+      console.log(`  export SIGNET_TOKEN=<token file>         # signet delegate <pubkey> -o <file>`);
     }
   });
 

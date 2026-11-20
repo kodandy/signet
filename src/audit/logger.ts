@@ -97,6 +97,12 @@ export class AuditLogger {
   }
 
   log(request: ActionRequest, decision: ActionDecision): AuditEntry {
+    // 直前ハッシュの読み取りと INSERT の間に別プロセスが書くとチェーンが分岐するため、
+    // BEGIN IMMEDIATE で書き込みを直列化する
+    return this.db.transaction(() => this.appendEntry(request, decision)).immediate();
+  }
+
+  private appendEntry(request: ActionRequest, decision: ActionDecision): AuditEntry {
     const previousHash = this.getLastHash();
     const chainHash = computeChainHash(previousHash, request, decision);
     const timestamp = new Date().toISOString();
@@ -113,6 +119,11 @@ export class AuditLogger {
       chainHash,
       previousHash,
     );
+
+    // 行が実際に入っていなければ記録されていない（トリガー等で黙って捨てられる場合）
+    if (result.changes !== 1) {
+      throw new Error("Audit entry was not written");
+    }
 
     return {
       id: result.lastInsertRowid as number,
