@@ -13,7 +13,7 @@ Set Padding 20
 
 # ─── Setup: create alias so "signet" works ───
 Hide
-Type "alias signet='node $(pwd)/dist/index.js'"
+Type 'alias signet="node $(pwd)/dist/index.js"'
 Enter
 Type "cd $(mktemp -d)"
 Enter
